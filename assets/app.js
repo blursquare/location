@@ -641,14 +641,16 @@
       .sort((a, b) => (b.dateDebut || '').localeCompare(a.dateDebut || ''))
       .map((b) => {
         const actif = !b.dateFin || b.dateFin >= today();
+        const cond = C.conditionsAu(b, actif ? currentPeriod() : (b.dateFin || currentPeriod()).slice(0, 7));
         return `<tr><td><b>${h(b.locataire)}</b><div class="small muted">${h(b.email || '')} ${h(b.telephone || '')}</div></td>
           <td>${h(bienNom(b.bienId))}</td>
           <td>${dateFr(b.dateDebut)}${b.dateFin ? ' → ' + dateFr(b.dateFin) : ''}<div>${actif ? '<span class="badge st-ok">En cours</span>' : '<span class="badge st-future">Terminé</span>'}</div></td>
-          <td class="num">${eur(b.loyerHC)}</td><td class="num">${eur(b.provisionCharges)}</td>
-          <td class="num"><b>${eur((Number(b.loyerHC) || 0) + (Number(b.provisionCharges) || 0))}</b></td>
+          <td class="num">${eur(cond.loyerHC)}${(b.revisions || []).length ? `<div class="small muted">${b.revisions.length} révision(s)</div>` : ''}</td><td class="num">${eur(cond.provisionCharges)}</td>
+          <td class="num"><b>${eur(cond.loyerHC + cond.provisionCharges)}</b></td>
           <td class="num">${eur(b.depotGarantie)}</td>
           <td><button class="link" data-act="editBail" data-id="${b.id}">Modifier</button>
           <button class="link" data-act="irl" data-id="${b.id}">Révision IRL</button>
+          <button class="link" data-act="revisions" data-id="${b.id}">Historique du loyer</button>
           <button class="link danger" data-act="delBail" data-id="${b.id}">Supprimer</button></td></tr>`;
       });
     return `<div class="toolbar"><h1 style="margin:0">Locataires &amp; baux</h1><span class="spacer"></span>${bienFilter()}<button data-act="editBail">+ Nouveau bail</button></div>
@@ -668,22 +670,59 @@
   };
   actions.irl = (d) => {
     const b = bailById(d.id);
+    const cond = C.conditionsAu(b, currentPeriod());
+    const d0 = b.dateDebut ? new Date(b.dateDebut + 'T00:00:00') : new Date();
+    let anniv = new Date(new Date().getFullYear(), d0.getMonth(), d0.getDate());
+    if (anniv < new Date(Date.now() - 30 * 86400000)) anniv = new Date(anniv.getFullYear() + 1, anniv.getMonth(), anniv.getDate());
     openForm(
       `Révision IRL — ${b.locataire}`,
       [
-        { type: 'html', html: `<p class="small muted">Nouveau loyer = loyer actuel × IRL du même trimestre de l'année / IRL de référence. Les indices sont publiés par l'INSEE.</p>` },
+        { type: 'html', html: `<p class="small muted">Nouveau loyer = loyer actuel × IRL du même trimestre de l'année / IRL de référence. Les indices sont publiés par l'INSEE. La révision s'ajoute à l'historique du bail : les échéances antérieures à la date d'effet ne changent pas.</p>` },
         { name: 'loyerHC', label: 'Loyer HC actuel (€)', type: 'number', required: true },
         { name: 'irlValeur', label: `IRL de référence ${b.irlTrimestre || ''}`, type: 'number', required: true },
         { name: 'irlTrimestre', label: 'Nouveau trimestre IRL', help: 'Ex. : T2 2026', required: true },
         { name: 'irlNouveau', label: 'Nouvel IRL', type: 'number', required: true },
+        { name: 'date', label: "Date d'effet", type: 'date', required: true },
       ],
-      { ...b, irlTrimestre: '' },
+      { ...b, loyerHC: cond.loyerHC, irlTrimestre: '', date: anniv.toISOString().slice(0, 10) },
       (v) => {
         const nouveau = C.revisionIRL(v.loyerHC, v.irlValeur, v.irlNouveau);
-        if (!confirm(`Nouveau loyer HC : ${eur(nouveau)} (au lieu de ${eur(v.loyerHC)}, soit ${eur(nouveau - v.loyerHC)}/mois).\n\nAppliquer au bail ? Les échéances passées ne sont pas modifiées si vous créez plutôt un nouveau bail à la date de révision.`)) return false;
-        upsert('baux', { ...b, loyerHC: nouveau, irlValeur: v.irlNouveau, irlTrimestre: v.irlTrimestre, notes: `${b.notes ? b.notes + '\n' : ''}${today()} : révision IRL ${eur(v.loyerHC)} → ${eur(nouveau)}` });
+        if (!confirm(`Nouveau loyer HC : ${eur(nouveau)} (au lieu de ${eur(v.loyerHC)}, soit ${eur(nouveau - v.loyerHC)}/mois) à compter du ${dateFr(v.date)}.\n\nAjouter cette révision au bail ?`)) return false;
+        const revisions = [...(b.revisions || []), { date: v.date, loyerHC: nouveau, motif: `IRL ${v.irlTrimestre} (${v.irlValeur} → ${v.irlNouveau})` }];
+        upsert('baux', { ...b, revisions, irlValeur: v.irlNouveau, irlTrimestre: v.irlTrimestre });
       },
       'Calculer'
+    );
+  };
+  actions.revisions = (d) => {
+    const b = bailById(d.id);
+    const revs = [...(b.revisions || [])].sort((x, y) => x.date.localeCompare(y.date));
+    const liste = revs.length
+      ? `<table><tr><th>Effet</th><th class="num">Loyer HC</th><th class="num">Provisions</th><th>Motif</th><th></th></tr>${revs
+          .map(
+            (r) => `<tr><td>${dateFr(r.date)}</td><td class="num">${r.loyerHC !== undefined && r.loyerHC !== '' ? eur(r.loyerHC) : '—'}</td><td class="num">${r.provisionCharges !== undefined && r.provisionCharges !== '' ? eur(r.provisionCharges) : '—'}</td>
+              <td class="small">${h(r.motif || '')}</td><td><button type="button" class="link danger" data-suppr-rev="${b.id}|${r.date}">Supprimer</button></td></tr>`
+          )
+          .join('')}</table>`
+      : '<p class="muted">Aucune révision : le loyer initial s’applique sur toute la durée du bail.</p>';
+    openForm(
+      `Historique du loyer — ${b.locataire}`,
+      [
+        { type: 'html', html: `<p class="small">Au départ (${dateFr(b.dateDebut)}) : loyer ${eur(b.loyerHC)}, provisions ${eur(b.provisionCharges)}.</p>${liste}<h3 style="margin:12px 0 0">Ajouter une révision</h3>` },
+        { name: 'date', label: "Date d'effet", type: 'date', required: true },
+        { name: 'motif', label: 'Motif', help: 'Ex. : révision IRL, ajustement des provisions après régularisation' },
+        { name: 'loyerHC', label: 'Nouveau loyer HC (€)', type: 'number', help: 'Laisser vide si inchangé' },
+        { name: 'provisionCharges', label: 'Nouvelles provisions (€)', type: 'number', help: 'Laisser vide si inchangé' },
+      ],
+      { date: today() },
+      (v) => {
+        if (v.loyerHC === '' && v.provisionCharges === '') return alert('Indiquez un nouveau loyer ou de nouvelles provisions.'), false;
+        const r = { date: v.date, motif: v.motif };
+        if (v.loyerHC !== '') r.loyerHC = v.loyerHC;
+        if (v.provisionCharges !== '') r.provisionCharges = v.provisionCharges;
+        upsert('baux', { ...b, revisions: [...(b.revisions || []).filter((x) => x.date !== v.date), r] });
+      },
+      'Ajouter'
     );
   };
 
@@ -716,7 +755,7 @@
       .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
       .map((p) => {
         const b = bailById(p.bailId) || {};
-        const nature = p.nature === 'regularisation' ? `<span class="badge st-part">Régul. charges ${h(p.regulAnnee || '')}</span> ` : p.nature === 'teom' ? `<span class="badge st-part">TEOM ${h(p.regulAnnee || '')}</span> ` : '';
+        const nature = p.nature === 'regularisation' ? `<span class="badge st-part">Régul. charges ${h(p.regulAnnee || '')}</span> ` : p.nature === 'teom' ? `<span class="badge st-part">TEOM ${h(p.regulAnnee || '')}</span> ` : p.nature === 'divers' ? '<span class="badge st-future">Divers</span> ' : '';
         return `<tr><td>${dateFr(p.date)}</td><td>${h(b.locataire || '?')}</td><td>${nature}${periodeLabel(p.periode)}</td><td>${h(p.mode || '')}</td>
           <td class="num">${eur(p.montant)}</td><td>${h(p.note || '')}</td>
           <td><button class="link" data-act="editPaiement" data-id="${p.id}">Modifier</button>
@@ -761,6 +800,17 @@
   };
   // Boutons dans la modale (hors délégation de la vue)
   document.getElementById('modal-body').addEventListener('click', (e) => {
+    const sr = e.target.closest('[data-suppr-rev]');
+    if (sr) {
+      const [id, date] = sr.dataset.supprRev.split('|');
+      const b = bailById(id);
+      if (!confirm(`Supprimer la révision du ${dateFr(date)} ?`)) return;
+      upsert('baux', { ...b, revisions: (b.revisions || []).filter((r) => r.date !== date) });
+      modal.close();
+      actions.revisions({ id });
+      render();
+      return;
+    }
     const q = e.target.closest('[data-quittance]');
     if (q) {
       const [id, p] = q.dataset.quittance.split('|');

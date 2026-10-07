@@ -189,3 +189,15 @@ test('TEOM proratisée et exclue de la régularisation des charges', () => {
   const s = C.situationBail(bail, [{ bailId: 'b', periode: '2025-08', montant: 520, nature: 'teom' }], '2025-08', '2025-08');
   assert.equal(s[0].paye, 0);
 });
+
+test('révisions de loyer et de provisions en cours de bail', () => {
+  const bail = { id: 'b', dateDebut: '2025-01-28', loyerHC: 470, provisionCharges: 70, revisions: [{ date: '2025-10-01', loyerHC: 474.89 }, { date: '2026-05-01', provisionCharges: 75 }] };
+  const e = C.echeancesBail(bail, '2025-01', '2026-05');
+  const par = Object.fromEntries(e.map((x) => [x.periode, x]));
+  assert.equal(par['2025-01'].loyer, C.round2((470 * 4) / 31));
+  assert.equal(par['2025-09'].du, 540);
+  assert.equal(par['2025-10'].du, 544.89);
+  assert.equal(par['2026-04'].du, 544.89);
+  assert.equal(par['2026-05'].du, 549.89);
+  assert.deepEqual(C.conditionsAu(bail, '2026-06'), { loyerHC: 474.89, provisionCharges: 75 });
+});

@@ -113,14 +113,33 @@
    * Échéances mensuelles d'un bail entre deux périodes incluses (YYYY-MM).
    * Le premier et le dernier mois sont proratisés au nombre de jours occupés.
    */
+  /**
+   * Loyer et provision en vigueur pour un mois (AAAA-MM), compte tenu des révisions du bail
+   * (bail.revisions : [{ date, loyerHC?, provisionCharges? }], effet à partir du mois de la date).
+   */
+  function conditionsAu(bail, periode) {
+    let loyer = Number(bail.loyerHC) || 0;
+    let prov = Number(bail.provisionCharges) || 0;
+    const revs = (bail.revisions || []).filter((r) => r && r.date).sort((a, b) => a.date.localeCompare(b.date));
+    for (const r of revs) {
+      if (r.date.slice(0, 7) > periode) break;
+      if (r.loyerHC !== undefined && r.loyerHC !== '' && r.loyerHC !== null) loyer = Number(r.loyerHC) || 0;
+      if (r.provisionCharges !== undefined && r.provisionCharges !== '' && r.provisionCharges !== null) prov = Number(r.provisionCharges) || 0;
+    }
+    return { loyerHC: loyer, provisionCharges: prov };
+  }
+
+  /**
+   * Échéances mensuelles d'un bail entre deux périodes incluses (YYYY-MM).
+   * Le premier et le dernier mois sont proratisés au nombre de jours occupés ;
+   * les révisions de loyer / provisions s'appliquent à partir de leur mois d'effet.
+   */
   function echeancesBail(bail, fromPeriod, toPeriod) {
     const debut = parseDate(bail.dateDebut);
     if (!debut) return [];
     const fin = bail.dateFin ? parseDate(bail.dateFin) : null;
     const [fy, fm] = fromPeriod.split('-').map(Number);
     const [ty, tm] = toPeriod.split('-').map(Number);
-    const loyer = Number(bail.loyerHC) || 0;
-    const prov = Number(bail.provisionCharges) || 0;
     const out = [];
     for (let y = fy, m = fm; y < ty || (y === ty && m <= tm); m === 12 ? (y++, (m = 1)) : m++) {
       const dim = daysInMonth(y, m);
@@ -132,13 +151,15 @@
       const e = fin && fin < mEnd ? fin : mEnd;
       const jours = daysBetween(s, e) + 1;
       const prorata = jours / dim;
+      const periode = periodKey(y, m);
+      const c = conditionsAu(bail, periode);
       out.push({
-        periode: periodKey(y, m),
+        periode,
         jours,
         prorata,
-        loyer: round2(loyer * prorata),
-        provision: round2(prov * prorata),
-        du: round2((loyer + prov) * prorata),
+        loyer: round2(c.loyerHC * prorata),
+        provision: round2(c.provisionCharges * prorata),
+        du: round2((c.loyerHC + c.provisionCharges) * prorata),
       });
     }
     return out;
@@ -515,6 +536,7 @@
     pretAnnee,
     crdAu,
     echeancesBail,
+    conditionsAu,
     situationBail,
     revisionIRL,
     joursOccupes,
