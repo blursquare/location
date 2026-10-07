@@ -506,7 +506,7 @@
 
   /**
    * Associés et quotes-parts, saisis une ligne par associé : « Marie Dupont : 50 » ou « Paul 500 parts ».
-   * Les nombres sont normalisés en pourcentages.
+   * Les nombres sont normalisés en pourcentages ; sans parts saisies, pct vaut null.
    */
   function associes(texte) {
     const lignes = String(texte || '')
@@ -518,7 +518,7 @@
         return m ? { nom: m[1].trim(), poids: Number(m[2].replace(',', '.')) } : { nom: l, poids: 0 };
       });
     const total = lignes.reduce((s, a) => s + a.poids, 0);
-    return lignes.map((a) => ({ nom: a.nom, pct: total ? round2((a.poids / total) * 100) : 0 }));
+    return lignes.map((a) => ({ nom: a.nom, pct: total ? round2((a.poids / total) * 100) : null }));
   }
 
   const api = {
