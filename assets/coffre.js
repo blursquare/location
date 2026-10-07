@@ -54,9 +54,34 @@
     return { cle: c, donnees: await dechiffrer(c, env) };
   }
 
+  /*
+   * Lien d'import : données JSON compressées (gzip) en base64url, placées après « #import= ».
+   * La partie après « # » n'est jamais envoyée au serveur qui héberge l'outil.
+   */
+  async function encoderLien(objet) {
+    const flux = new Blob([JSON.stringify(objet)]).stream().pipeThrough(new CompressionStream('gzip'));
+    const octets = new Uint8Array(await new Response(flux).arrayBuffer());
+    return toB64(octets).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  async function decoderLien(texte) {
+    const b64 = String(texte || '').trim().replace(/-/g, '+').replace(/_/g, '/');
+    let octets;
+    try {
+      octets = fromB64(b64 + '==='.slice((b64.length + 3) % 4));
+    } catch (e) {
+      throw new Error('lien incomplet ou abîmé');
+    }
+    try {
+      const flux = new Blob([octets]).stream().pipeThrough(new DecompressionStream('gzip'));
+      return JSON.parse(await new Response(flux).text());
+    } catch (e) {
+      throw new Error('lien incomplet ou abîmé');
+    }
+  }
+
   const estEnveloppe = (x) => !!x && x.format === 'gestion-locative-chiffre' && typeof x.data === 'string';
 
-  const api = { deriverCle, chiffrer, dechiffrer, ouvrir, estEnveloppe };
+  const api = { deriverCle, chiffrer, dechiffrer, ouvrir, estEnveloppe, encoderLien, decoderLien };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Coffre = api;
 })(typeof window !== 'undefined' ? window : globalThis);
