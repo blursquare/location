@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gestion locative</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🏠 Gestion locative <small>copropriété</small></div>
+    <div class="top-actions">
+      <label class="year">Année
+        <select id="annee"></select>
+      </label>
+      <button id="verrou" class="secondary" title="Verrouiller">🔒</button>
+    </div>
+  </header>
+  <nav id="nav" class="nav">
+    <button data-view="dashboard">Tableau de bord</button>
+    <button data-view="biens">Biens</button>
+    <button data-view="baux">Locataires &amp; baux</button>
+    <button data-view="loyers">Loyers</button>
+    <button data-view="charges">Charges</button>
+    <button data-view="prets">Prêts</button>
+    <button data-view="gmail">Import Gmail</button>
+    <button data-view="fiscalite">Fiscalité</button>
+    <button data-view="parametres">Paramètres</button>
+  </nav>
+  <main id="view" class="view"></main>
+
+  <dialog id="modal">
+    <form method="dialog" id="modal-form">
+      <h2 id="modal-title"></h2>
+      <div id="modal-body"></div>
+      <div class="actions">
+        <button type="button" class="secondary" id="modal-cancel">Annuler</button>
+        <button type="submit" id="modal-ok">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="assets/coffre.js"></script>
+  <script src="assets/calc.js"></script>
+  <script src="assets/extract.js"></script>
+  <script src="assets/gmail.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>
