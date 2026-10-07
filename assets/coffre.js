@@ -72,6 +72,19 @@
       throw new Error('lien incomplet ou abîmé');
     }
     try {
+      if (typeof DecompressionStream === 'undefined' && root.document) {
+        // Navigateurs anciens : décompression par pako, chargé à la demande.
+        if (!root.pako) {
+          await new Promise((ok, ko) => {
+            const sc = root.document.createElement('script');
+            sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako_inflate.min.js';
+            sc.onload = ok;
+            sc.onerror = () => ko(new Error('décompression indisponible'));
+            root.document.head.appendChild(sc);
+          });
+        }
+        return JSON.parse(root.pako.ungzip(octets, { to: 'string' }));
+      }
       const flux = new Blob([octets]).stream().pipeThrough(new DecompressionStream('gzip'));
       return JSON.parse(await new Response(flux).text());
     } catch (e) {
