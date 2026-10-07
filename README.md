@@ -16,6 +16,18 @@ Aucune installation ni serveur : ouvrez `index.html` dans un navigateur. Les don
 | **Prêts** | Mensualité, assurance, différé, **tableau d'amortissement** annuel et mensuel, CRD, coût total, export CSV. |
 | **Fiscalité** | Estimation du résultat foncier (régime réel, repères de la déclaration 2044) et comparaison avec le micro-foncier. |
 
+## Import automatique depuis Gmail
+
+L'onglet **Import Gmail** récupère lui-même les PDF joints à vos e-mails : appels de fonds du syndic et relevés (comptes rendus) de gérance de l'agence.
+
+1. **Connexion Google** (une fois) : créez un *ID client OAuth* de type « Application Web » dans la console Google Cloud, en activant la Gmail API (guide pas à pas dans l'onglet). L'accès est en **lecture seule** et le navigateur dialogue directement avec Google : vos e-mails ne passent par aucun autre serveur.
+2. **Règles** : une par expéditeur, par exemple `from:(@mon-syndic.fr)` → appels de fonds → bien « T2 Croix-Rousse », 70 % récupérable.
+3. **Chercher les nouveaux PDF** : l'outil lit chaque PDF (pdf.js), propose la date, les charges, le fonds travaux, le loyer encaissé, les honoraires… et reconnaît le bien si son adresse figure dans le document. Vous vérifiez, corrigez si besoin, puis importez. Les PDF déjà importés ou ignorés ne sont plus proposés.
+
+Google n'accepte pas la connexion depuis un fichier ouvert directement (`file://`) : utilisez la version en ligne, ou lancez `python3 -m http.server 8000` dans le dossier puis ouvrez `http://localhost:8000` (origine à déclarer dans l'ID client).
+
+Les PDF scannés (images sans texte) ne peuvent pas être lus : les montants se saisissent alors à la main dans l'écran de vérification.
+
 ## Importer des opérations (syndic, gérance)
 
 *Paramètres → Importer des opérations* ajoute des charges et des encaissements **sans écraser** les données existantes. Chaque opération porte une `source` unique (ex. identifiant du mail d'origine) : un même fichier importé deux fois ne crée pas de doublon.
@@ -45,6 +57,8 @@ Le workflow `.github/workflows/pages.yml` teste puis publie le site à chaque pu
 ## Développement
 
 - `assets/calc.js` : calculs purs (prêts, échéances, régularisation, synthèses), testés.
+- `assets/extract.js` : lecture des montants dans le texte des appels de fonds et relevés de gérance, testée.
+- `assets/gmail.js` : connexion Gmail (Google Identity Services) et lecture des PDF (pdf.js, chargé à la demande).
 - `assets/app.js` : interface (JavaScript natif, sans dépendance).
 - Tests : `npm test` (Node ≥ 18).
 

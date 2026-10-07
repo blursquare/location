@@ -10,6 +10,7 @@
   const empty = () => ({
     version: 1,
     bailleur: { nom: '', adresse: '' },
+    gmail: { clientId: '', regles: [], ignores: [] },
     biens: [],
     baux: [],
     paiements: [],
@@ -863,6 +864,219 @@
       <h2>Par bien</h2>
       ${table(['Bien', { label: 'Recettes', cls: 'num' }, { label: 'Déductions', cls: 'num' }, { label: 'Résultat', cls: 'num' }], parBien)}
       <p class="small muted">En location meublée (LMNP), le régime est différent (BIC, amortissements) : ces chiffres servent alors uniquement de base de travail.</p>`;
+  };
+
+  // ---------- Import Gmail ----------
+  const cfgGmail = () => (db.gmail = { clientId: '', regles: [], ignores: [], ...(db.gmail || {}) });
+  let gmailDocs = [];
+  let gmailJournal = [];
+  let gmailEnCours = false;
+  const baseSource = (s) => String(s || '').split(':').slice(0, 3).join(':');
+  function sourcesConnues() {
+    const s = new Set(cfgGmail().ignores);
+    for (const x of [...db.charges, ...db.paiements]) if (x.source) s.add(baseSource(x.source));
+    return s;
+  }
+  function devinerBien(texte, defaut) {
+    const t = Extract && texte ? texte.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase() : '';
+    const n = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+    const trouve = db.biens.find((b) => {
+      const rue = n(b.adresse).split(',')[0];
+      return (rue.length > 6 && t.includes(rue)) || (b.copropriete && n(b.copropriete).length > 4 && t.includes(n(b.copropriete)));
+    });
+    return (trouve || bienById(defaut) || db.biens[0] || {}).id || '';
+  }
+  function proposition(doc, regle) {
+    const e = doc.extraction || {};
+    const bienId = devinerBien(doc.texte, regle.bienId);
+    if (e.type === 'gerance') {
+      const encaisse = e.encaisse ?? ((e.loyer || 0) + (e.provisions || 0) || null);
+      return { type: 'gerance', bienId, periode: e.periode || doc.dateMail.slice(0, 7), date: e.date || '', encaisse, honoraires: e.honoraires, assurance: e.assurance, net: e.net };
+    }
+    const pct = regle.pctRecup === '' || regle.pctRecup === undefined ? 0 : Number(regle.pctRecup);
+    const montant = e.total !== null && e.total !== undefined ? Math.round((e.total - (e.fondsTravaux || 0)) * 100) / 100 : null;
+    const tri = e.trimestre;
+    const an = (tri && tri.annee) || Number((e.date || doc.dateMail).slice(0, 4));
+    return {
+      type: 'appel',
+      bienId,
+      date: e.date || doc.dateMail,
+      libelle: tri ? `Appel de fonds T${tri.n} ${an}` : e.travaux ? `Appel de fonds travaux ${an}` : `Appel de fonds — ${doc.sujet || doc.fichier}`,
+      categorie: e.travaux ? 'copro_travaux' : 'copro',
+      montant,
+      partRecuperable: montant !== null && !e.travaux ? Math.round(montant * pct) / 100 : 0,
+      fondsTravaux: e.fondsTravaux,
+    };
+  }
+
+  const champsRegle = () => [
+    { name: 'nom', label: 'Nom', required: true, help: 'Ex. : Syndic Foncia, Agence Citya' },
+    { name: 'type', label: 'Type de documents', type: 'select', options: [['appel', 'Appels de fonds du syndic'], ['gerance', 'Relevés de gérance (agence)'], ['auto', 'Détection automatique']] },
+    { name: 'requete', label: 'Recherche Gmail', full: true, required: true, help: 'Syntaxe Gmail, ex. : from:(@foncia.fr) ou subject:("appel de fonds") — les PDF joints sont ajoutés automatiquement' },
+    { name: 'bienId', label: 'Bien par défaut', type: 'select', options: bienOptions(), help: "Remplacé si l'adresse d'un autre bien figure dans le PDF" },
+    { name: 'pctRecup', label: 'Part récupérable des appels (%)', type: 'number', step: '1', min: 0, help: 'Estimation, à ajuster après le décompte annuel du syndic' },
+    { name: 'depuis', label: 'Chercher depuis le', type: 'date' },
+  ];
+
+  views.gmail = () => {
+    const g = cfgGmail();
+    if (!db.biens.length) return `<h1>Import Gmail</h1>${needBien()}`;
+    const horsLigne = location.protocol === 'file:';
+    const guide = `<details ${g.clientId ? '' : 'open'}><summary>Configuration (une seule fois, environ 5 minutes)</summary>
+      <ol class="small">
+        <li>Ouvrez <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">console.cloud.google.com</a> avec votre compte Gmail et créez un projet (ex. « Gestion locative »).</li>
+        <li><i>API et services → Bibliothèque</i> : activez <b>Gmail API</b>.</li>
+        <li><i>Écran de consentement OAuth</i> (ou <i>Google Auth Platform</i>) : type <b>Externe</b>, nom de l'application et votre e-mail ; dans <i>Audience / Utilisateurs test</i>, ajoutez <b>votre adresse Gmail</b>. Laissez l'application en mode « Test ».</li>
+        <li><i>Identifiants → Créer → ID client OAuth</i> : type <b>Application Web</b>, et dans <i>Origines JavaScript autorisées</i> ajoutez :<br><code>${h(horsLigne ? 'http://localhost:8000' : location.origin)}</code></li>
+        <li>Copiez l'<b>ID client</b> (se termine par <code>.apps.googleusercontent.com</code>) ci-dessous.</li>
+      </ol>
+      <p class="small muted">L'accès est en <b>lecture seule</b>. Le navigateur dialogue directement avec Google : ni vos e-mails ni vos PDF ne passent par un autre serveur.
+      Google affichera « application non validée » : c'est normal pour une application personnelle en mode Test, cliquez sur <i>Continuer</i>.</p></details>`;
+    const regles = g.regles.map(
+      (r) => `<tr><td><b>${h(r.nom)}</b></td><td>${{ appel: 'Appels de fonds', gerance: 'Relevés de gérance', auto: 'Automatique' }[r.type] || ''}</td>
+        <td><code>${h(r.requete)}</code></td><td>${h(bienNom(r.bienId))}</td><td class="num">${r.type === 'gerance' ? '—' : pct(r.pctRecup || 0)}</td>
+        <td><button class="link" data-act="editRegle" data-id="${r.id}">Modifier</button><button class="link danger" data-act="delRegle" data-id="${r.id}">Supprimer</button></td></tr>`
+    );
+    const connecte = window.GmailSource && GmailSource.estConnecte();
+    return `<div class="toolbar"><h1 style="margin:0">Import Gmail</h1><span class="spacer"></span>
+        ${connecte ? '<span class="badge st-ok">Connecté à Gmail</span><button class="secondary" data-act="gmailDeco">Se déconnecter</button>' : ''}</div>
+      <p class="muted small">Récupère automatiquement les PDF joints à vos e-mails (appels de fonds du syndic, relevés de gérance de l'agence), en extrait les montants et vous les fait vérifier avant de les ajouter.</p>
+      ${horsLigne ? `<div class="card" style="border-color:var(--warn)"><b>Ouvrez l'outil via une adresse web pour utiliser Gmail.</b>
+        <p class="small">Google refuse les connexions depuis un fichier ouvert directement. Utilisez la version en ligne (GitHub Pages) ou lancez dans le dossier de l'outil :
+        <code>python3 -m http.server 8000</code> puis ouvrez <code>http://localhost:8000</code>.</p></div>` : ''}
+      <div class="card" style="margin-top:12px"><h2 style="margin-top:0">1. Connexion Google</h2>${guide}
+        <div class="toolbar" style="margin-top:10px"><input id="gmail-client" placeholder="123456789-xxxx.apps.googleusercontent.com" value="${h(g.clientId)}" style="max-width:460px">
+        <button class="secondary" data-act="gmailClient">Enregistrer l'ID client</button></div></div>
+      <div class="card" style="margin-top:12px"><div class="toolbar"><h2 style="margin:0">2. Règles de recherche</h2><span class="spacer"></span><button class="secondary" data-act="editRegle">+ Règle</button></div>
+        ${g.regles.length ? table(['Nom', 'Type', 'Recherche', 'Bien', { label: 'Récup.', cls: 'num' }, ''], regles) : '<p class="muted">Ajoutez une règle par expéditeur : par exemple une pour votre syndic, une pour votre agence.</p>'}</div>
+      <div class="card" style="margin-top:12px"><div class="toolbar"><h2 style="margin:0">3. Récupérer les documents</h2><span class="spacer"></span>
+        <button data-act="gmailChercher" ${!g.clientId || !g.regles.length || gmailEnCours || horsLigne ? 'disabled' : ''}>${gmailEnCours ? 'Recherche en cours…' : '🔍 Chercher les nouveaux PDF'}</button></div>
+        ${gmailJournal.length ? `<div class="small muted" id="gmail-journal">${gmailJournal.map(h).join('<br>')}</div>` : ''}
+        ${vueDocsGmail()}</div>`;
+  };
+
+  function vueDocsGmail() {
+    if (!gmailDocs.length) return '';
+    const opt = (id) => db.biens.map((b) => `<option value="${b.id}" ${b.id === id ? 'selected' : ''}>${h(b.nom)}</option>`).join('');
+    const inp = (i, k, v, type = 'number') => `<input data-gd="${i}" data-k="${k}" type="${type}" ${type === 'number' ? 'step="0.01"' : ''} value="${h(v ?? '')}" style="min-width:${type === 'text' ? 180 : 90}px">`;
+    const conf = { bonne: 'st-ok', partielle: 'st-part', faible: 'st-due' };
+    const rows = gmailDocs.map((d, i) => {
+      const p = d.prop;
+      const ent = `<td><select data-gd="${i}" data-k="action"><option value="importer" ${d.action === 'importer' ? 'selected' : ''}>Importer</option><option value="plus-tard" ${d.action === 'plus-tard' ? 'selected' : ''}>Plus tard</option><option value="ignorer" ${d.action === 'ignorer' ? 'selected' : ''}>Ignorer définitivement</option></select></td>
+        <td><b>${h(d.fichier)}</b><div class="small muted">${h(d.sujet)}<br>${dateFr(d.dateMail)} — ${h(d.expediteur)}</div>
+        <div class="small">${d.blobUrl ? `<a href="${d.blobUrl}" target="_blank" rel="noopener">Voir le PDF</a> · ` : ''}<a href="${h(d.lienMail)}" target="_blank" rel="noopener">Voir l'e-mail</a></div>
+        ${d.erreur ? `<div class="small neg">${h(d.erreur)}</div>` : ''}<span class="badge ${conf[(d.extraction || {}).confiance] || 'st-due'}">lecture ${h((d.extraction || {}).confiance || 'faible')}</span></td>
+        <td><select data-gd="${i}" data-k="bienId">${opt(p.bienId)}</select></td>`;
+      if (p.type === 'gerance') {
+        return `<tr>${ent}<td>Relevé de gérance<br>${inp(i, 'periode', p.periode, 'month')}</td>
+          <td><label class="small muted">Loyer + provisions encaissés${inp(i, 'encaisse', p.encaisse)}</label>
+          <label class="small muted">Honoraires TTC${inp(i, 'honoraires', p.honoraires)}</label>
+          <label class="small muted">Garantie loyers impayés${inp(i, 'assurance', p.assurance)}</label>
+          ${p.net !== null && p.net !== undefined ? `<div class="small muted">Net versé lu : ${eur(p.net)}</div>` : ''}</td></tr>`;
+      }
+      return `<tr>${ent}<td>Appel de fonds<br>${inp(i, 'date', p.date, 'date')}<br>${inp(i, 'libelle', p.libelle, 'text')}</td>
+        <td><label class="small muted">Charges${inp(i, 'montant', p.montant)}</label>
+        <label class="small muted">dont récupérable${inp(i, 'partRecuperable', p.partRecuperable)}</label>
+        <label class="small muted">Fonds travaux${inp(i, 'fondsTravaux', p.fondsTravaux)}</label></td></tr>`;
+    });
+    return `<h2>Documents à vérifier (${gmailDocs.length})</h2>
+      <p class="small muted">Contrôlez les montants lus dans chaque PDF (ouvrez-le au besoin) avant d'importer.</p>
+      ${table(['Action', 'Document', 'Bien', 'Type', 'Montants'], rows)}
+      <div class="toolbar" style="margin-top:10px"><span class="spacer"></span><button data-act="gmailImporter">Importer la sélection</button></div>`;
+  }
+
+  // Les champs du tableau de vérification mettent à jour les propositions en mémoire.
+  el.addEventListener('input', (e) => {
+    const t = e.target;
+    if (t.dataset.gd === undefined) return;
+    const d = gmailDocs[Number(t.dataset.gd)];
+    if (!d) return;
+    if (t.dataset.k === 'action') d.action = t.value;
+    else d.prop[t.dataset.k] = t.type === 'number' ? (t.value === '' ? null : Number(t.value)) : t.value;
+  });
+
+  actions.gmailClient = () => {
+    cfgGmail().clientId = document.getElementById('gmail-client').value.trim();
+    save();
+    render();
+  };
+  actions.editRegle = (d) => {
+    const g = cfgGmail();
+    const r = d.id ? g.regles.find((x) => x.id === d.id) : { type: 'appel', bienId: filtreBien || (db.biens[0] || {}).id, pctRecup: 70 };
+    openForm(d.id ? 'Modifier la règle' : 'Nouvelle règle de recherche', champsRegle(), r, (v) => {
+      const i = g.regles.findIndex((x) => x.id === v.id);
+      if (i >= 0) g.regles[i] = v;
+      else g.regles.push({ ...v, id: uid() });
+      save();
+    });
+  };
+  actions.delRegle = (d) => {
+    if (!confirm('Supprimer cette règle ?')) return;
+    const g = cfgGmail();
+    g.regles = g.regles.filter((r) => r.id !== d.id);
+    save();
+    render();
+  };
+  actions.gmailDeco = () => {
+    GmailSource.deconnecter();
+    render();
+  };
+  actions.gmailChercher = async () => {
+    const g = cfgGmail();
+    gmailEnCours = true;
+    gmailJournal = ['Connexion à Google…'];
+    gmailDocs = [];
+    render();
+    const log = (m) => {
+      gmailJournal.push(m);
+      const j = document.getElementById('gmail-journal');
+      if (j) j.innerHTML = gmailJournal.map(h).join('<br>');
+    };
+    try {
+      await GmailSource.connecter(g.clientId);
+      const connues = sourcesConnues();
+      for (const regle of g.regles) {
+        const docs = await GmailSource.chercher(regle, connues, log);
+        for (const d of docs) {
+          connues.add(d.source);
+          d.prop = proposition(d, regle);
+          d.action = d.erreur || (d.extraction || {}).confiance === 'faible' ? 'plus-tard' : 'importer';
+          gmailDocs.push(d);
+        }
+      }
+      gmailDocs.sort((a, b) => a.dateMail.localeCompare(b.dateMail));
+      log(gmailDocs.length ? `${gmailDocs.length} nouveau(x) document(s) à vérifier.` : 'Aucun nouveau document.');
+    } catch (e) {
+      log('Erreur : ' + e.message);
+    }
+    gmailEnCours = false;
+    render();
+  };
+  actions.gmailImporter = () => {
+    const g = cfgGmail();
+    const imp = { charges: [], paiements: [] };
+    let ignores = 0;
+    for (const d of gmailDocs) {
+      if (d.action === 'ignorer') {
+        g.ignores.push(d.source);
+        ignores++;
+      }
+      if (d.action !== 'importer') continue;
+      const ops = Extract.operationsDepuis(d.prop.type, d.source, d.prop);
+      imp.charges.push(...ops.charges);
+      imp.paiements.push(...ops.paiements);
+    }
+    const r = C.fusionnerOperations(db, imp, uid);
+    const msg = [`${r.ajouts.charges} charge(s) et ${r.ajouts.paiements} encaissement(s) importé(s).`, ignores ? `${ignores} document(s) ignoré(s) définitivement.` : '', r.erreurs.length ? `Non importés :\n- ${r.erreurs.join('\n- ')}` : '']
+      .filter(Boolean)
+      .join('\n');
+    if (!confirm(msg.replace('importé(s)', 'à importer') + '\n\nConfirmer ?')) return;
+    db = { ...r.data, gmail: g };
+    save();
+    for (const d of gmailDocs) if (d.blobUrl && d.action !== 'plus-tard') URL.revokeObjectURL(d.blobUrl);
+    gmailDocs = gmailDocs.filter((d) => d.action === 'plus-tard');
+    gmailJournal.push(msg);
+    render();
   };
 
   // ---------- Paramètres ----------
