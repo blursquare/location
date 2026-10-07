@@ -92,6 +92,20 @@
   const bienOptions = () => db.biens.map((b) => [b.id, b.nom]);
   const bailOptions = () => db.baux.map((b) => [b.id, `${b.locataire} — ${bienNom(b.bienId)}`]);
 
+  // Certains navigateurs intégrés aux applications (liens ouverts depuis une messagerie…) refusent
+  // les fenêtres de confirmation sans les afficher : on le détecte pour prévenir l'utilisateur.
+  let dialoguesBloques = false;
+  const confirmNatif = window.confirm.bind(window);
+  window.confirm = (message) => {
+    const t = performance.now();
+    const r = confirmNatif(message);
+    if (!r && performance.now() - t < 40 && !dialoguesBloques) {
+      dialoguesBloques = true;
+      setTimeout(() => render(), 0);
+    }
+    return r;
+  };
+
   // Lien d'import (#import=…) : mis de côté puis retiré de l'adresse immédiatement.
   let importEnAttente = null;
   if (location.hash.startsWith('#import=')) {
@@ -324,6 +338,13 @@
     location.hash = v;
   });
   window.addEventListener('hashchange', () => {
+    if (location.hash.startsWith('#import=')) {
+      const code = location.hash.slice('#import='.length);
+      history.replaceState(null, '', location.pathname + location.search);
+      if (cle) recevoirImport(code).then(render);
+      else importEnAttente = code;
+      return;
+    }
     view = location.hash.slice(1) || 'dashboard';
     render();
   });
@@ -362,7 +383,10 @@
     fillYears();
     for (const b of nav.querySelectorAll('button')) b.classList.toggle('active', b.dataset.view === view);
     const fn = views[view] || views.dashboard;
-    el.innerHTML = fn();
+    const avert = dialoguesBloques
+      ? '<div class="card bandeau st-due" style="margin-bottom:12px">Ce navigateur bloque les fenêtres de confirmation : certaines actions (suppressions, imports de fichiers) ne peuvent pas aboutir. Ouvrez l\'outil dans Safari ou Chrome (menu « Ouvrir dans le navigateur »).</div>'
+      : '';
+    el.innerHTML = avert + htmlBandeau() + fn();
   }
 
   // Filtre global : un bien, tous les biens d'un propriétaire (p:id) ou d'un mode de gestion (g:agence / g:direct)
@@ -1626,6 +1650,10 @@
         <p class="small muted">Vos données sont chiffrées avec ce mot de passe (AES-256). L'outil se verrouille après ${VERROU_MINUTES} minutes d'inactivité.
         <b>Un mot de passe oublié ne peut pas être récupéré</b> : conservez-le précieusement.</p>
         <button class="secondary" data-act="changerMdp">Changer le mot de passe</button></div>
+      <div class="card" style="margin-top:12px"><h2 style="margin-top:0">Coller un lien d'import</h2>
+        <p class="small muted">Si un lien d'import ne s'ouvre pas correctement (lien coupé, navigateur d'une application), collez-le ici en entier.</p>
+        <textarea id="coller-import" rows="3" placeholder="https://…/location/#import=…"></textarea>
+        <div class="toolbar" style="margin-top:8px"><button data-act="collerImport">Importer</button></div></div>
       <div class="card" style="margin-top:12px"><h2 style="margin-top:0">Importer des opérations</h2>
         <p class="small muted">Ajoute des appels de fonds du syndic, des encaissements ou des frais tirés des relevés de gérance (fichier préparé par Claude à partir de vos e-mails, par exemple),
         <b>sans remplacer</b> vos données. Les pièces déjà importées sont ignorées.</p>
@@ -1819,27 +1847,70 @@
   }
   for (const ev of ['mousemove', 'keydown', 'click', 'touchstart', 'scroll']) window.addEventListener(ev, activite, { passive: true });
 
-  async function traiterImportLien() {
-    if (!importEnAttente) return;
-    const code = importEnAttente;
-    importEnAttente = null;
+  // Import par lien : aucune fenêtre système (bloquées par certains navigateurs intégrés aux applis),
+  // tout passe par un bandeau dans la page.
+  let bandeauImport = null; // { type: 'ok' | 'proposition' | 'erreur', texte, donnees? }
+  const resumeDonnees = (d) => {
+    const n = (x) => (Array.isArray(x) ? x.length : 0);
+    return `${n(d.biens)} bien(s), ${n(d.baux)} bail(s), ${n(d.paiements)} encaissement(s), ${n(d.charges)} charge(s)`;
+  };
+  function appliquerImport(d) {
+    db = C.migrer({ ...empty(), ...d });
+    save();
+    view = 'dashboard';
+    if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+    bandeauImport = { type: 'ok', texte: `Données importées et enregistrées (chiffrées) dans ce navigateur : ${resumeDonnees(d)}.` };
+  }
+  async function recevoirImport(code) {
     let d;
     try {
       d = await Coffre.decoderLien(code);
       if (!d || !Array.isArray(d.biens)) throw new Error('données non reconnues');
     } catch (e) {
-      alert(`Import par lien impossible : ${e.message}.`);
+      bandeauImport = { type: 'erreur', texte: `Import impossible : ${e.message}. Le lien a peut-être été coupé : copiez-le en entier dans Paramètres → « Coller un lien d'import ».` };
       return;
     }
-    const n = (x) => (Array.isArray(x) ? x.length : 0);
-    const resume = `${n(d.biens)} bien(s), ${n(d.baux)} bail(s), ${n(d.paiements)} encaissement(s), ${n(d.charges)} charge(s)`;
-    const actuel = db.biens.length ? `\n\nVos données actuelles (${db.biens.length} bien(s), ${db.paiements.length} encaissement(s)) seront REMPLACÉES. Exportez une sauvegarde avant si besoin.` : '';
-    if (!confirm(`Importer les données reçues par lien : ${resume} ?${actuel}`)) return;
-    db = C.migrer({ ...empty(), ...d });
-    save();
-    view = 'dashboard';
-    alert(`Données importées et enregistrées (chiffrées) dans ce navigateur : ${resume}.`);
+    if (!db.biens.length) return appliquerImport(d);
+    bandeauImport = {
+      type: 'proposition',
+      donnees: d,
+      texte: `Données reçues par lien : ${resumeDonnees(d)}. Elles remplaceront vos données actuelles (${db.biens.length} bien(s), ${db.paiements.length} encaissement(s)).`,
+    };
   }
+  async function traiterImportLien() {
+    if (!importEnAttente) return;
+    const code = importEnAttente;
+    importEnAttente = null;
+    await recevoirImport(code);
+  }
+  function htmlBandeau() {
+    if (!bandeauImport) return '';
+    const cls = { ok: 'st-ok', proposition: 'st-part', erreur: 'st-due' }[bandeauImport.type];
+    const boutons =
+      bandeauImport.type === 'proposition'
+        ? '<button data-act="importLienOui">Remplacer par ces données</button> <button class="secondary" data-act="importLienNon">Ignorer</button>'
+        : '<button class="secondary" data-act="importLienNon">Fermer</button>';
+    return `<div class="card bandeau ${cls}" style="margin-bottom:12px"><p style="margin:0 0 8px">${h(bandeauImport.texte)}</p><div class="toolbar" style="margin:0">${boutons}</div></div>`;
+  }
+  actions.importLienOui = () => {
+    if (bandeauImport && bandeauImport.donnees) appliquerImport(bandeauImport.donnees);
+    render();
+  };
+  actions.importLienNon = () => {
+    bandeauImport = null;
+    render();
+  };
+  actions.collerImport = async () => {
+    const t = document.getElementById('coller-import').value.trim();
+    const m = t.match(/#?import=([A-Za-z0-9_-]+)/) || t.match(/^([A-Za-z0-9_-]{40,})$/);
+    if (!m) {
+      bandeauImport = { type: 'erreur', texte: "Ce texte ne contient pas de lien d'import." };
+      return render();
+    }
+    await recevoirImport(m[1]);
+    render();
+    window.scrollTo(0, 0);
+  };
 
   function ecranVerrou(message) {
     document.body.classList.add('locked');
