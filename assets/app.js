@@ -92,6 +92,12 @@
   const bienOptions = () => db.biens.map((b) => [b.id, b.nom]);
   const bailOptions = () => db.baux.map((b) => [b.id, `${b.locataire} — ${bienNom(b.bienId)}`]);
 
+  // Lien d'import (#import=…) : mis de côté puis retiré de l'adresse immédiatement.
+  let importEnAttente = null;
+  if (location.hash.startsWith('#import=')) {
+    importEnAttente = location.hash.slice('#import='.length);
+    history.replaceState(null, '', location.pathname + location.search);
+  }
   let annee = new Date().getFullYear();
   let view = location.hash.slice(1) || 'dashboard';
   let filtreBien = '';
@@ -1813,6 +1819,28 @@
   }
   for (const ev of ['mousemove', 'keydown', 'click', 'touchstart', 'scroll']) window.addEventListener(ev, activite, { passive: true });
 
+  async function traiterImportLien() {
+    if (!importEnAttente) return;
+    const code = importEnAttente;
+    importEnAttente = null;
+    let d;
+    try {
+      d = await Coffre.decoderLien(code);
+      if (!d || !Array.isArray(d.biens)) throw new Error('données non reconnues');
+    } catch (e) {
+      alert(`Import par lien impossible : ${e.message}.`);
+      return;
+    }
+    const n = (x) => (Array.isArray(x) ? x.length : 0);
+    const resume = `${n(d.biens)} bien(s), ${n(d.baux)} bail(s), ${n(d.paiements)} encaissement(s), ${n(d.charges)} charge(s)`;
+    const actuel = db.biens.length ? `\n\nVos données actuelles (${db.biens.length} bien(s), ${db.paiements.length} encaissement(s)) seront REMPLACÉES. Exportez une sauvegarde avant si besoin.` : '';
+    if (!confirm(`Importer les données reçues par lien : ${resume} ?${actuel}`)) return;
+    db = C.migrer({ ...empty(), ...d });
+    save();
+    view = 'dashboard';
+    alert(`Données importées et enregistrées (chiffrées) dans ce navigateur : ${resume}.`);
+  }
+
   function ecranVerrou(message) {
     document.body.classList.add('locked');
     const env = lireLocal(VAULT_KEY);
@@ -1864,6 +1892,7 @@
         }
         document.body.classList.remove('locked');
         activite();
+        await traiterImportLien();
         render();
       } catch (err) {
         msg.textContent = err.message;

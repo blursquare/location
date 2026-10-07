@@ -21,3 +21,11 @@ test('mauvais mot de passe refusé', async () => {
   const env = await K.chiffrer(c, { a: 1 });
   await assert.rejects(K.ouvrir('mauvais', env), /incorrect/);
 });
+
+test("lien d'import : aller-retour compressé", async () => {
+  const donnees = { biens: [{ id: 'x', nom: 'Terre des Rois B01 — é' }], paiements: Array.from({ length: 50 }, (_, i) => ({ montant: i })) };
+  const code = await K.encoderLien(donnees);
+  assert.match(code, /^[A-Za-z0-9_-]+$/);
+  assert.deepEqual(await K.decoderLien(code), donnees);
+  await assert.rejects(K.decoderLien(code.slice(0, 20)), /abîmé/);
+});

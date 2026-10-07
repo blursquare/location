@@ -9,6 +9,7 @@ Aucune installation ni serveur : ouvrez `index.html` dans un navigateur, ou la v
 - Au premier lancement, l'outil demande de **choisir un mot de passe**. Toutes les données sont **chiffrées** avec lui (AES-256-GCM, clé dérivée par PBKDF2-SHA256) avant d'être enregistrées dans le navigateur ; elles ne sont déchiffrées qu'en mémoire, le temps de la session.
 - L'outil se **verrouille** via le bouton 🔒 ou après 15 minutes d'inactivité.
 - Les sauvegardes exportées (*Paramètres → Exporter*) sont chiffrées avec le même mot de passe.
+- **Lien d'import** : `…/location/#import=<données compressées>` ouvre l'outil, demande le mot de passe puis une confirmation, et enregistre les données (chiffrées). La partie après `#` n'est jamais envoyée au serveur, et l'outil l'efface de l'adresse dès l'ouverture. Un tel lien contient des données personnelles : ne le partagez pas.
 - **Un mot de passe oublié ne peut pas être récupéré** : sans lui, les données et sauvegardes sont illisibles.
 - Les aides à la saisie n'envoient que le texte recherché (début d'adresse, SIREN ou nom de société) aux services publics `data.geopf.fr` et `recherche-entreprises.api.gouv.fr` ; aucune autre donnée ne quitte le navigateur, hormis l'import Gmail (dialogue direct avec Google).
 - Le site publié ne contient que le code : aucune donnée personnelle n'est envoyée sur GitHub ni ailleurs.
