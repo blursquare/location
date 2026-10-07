@@ -1666,38 +1666,54 @@
     const env = await Coffre.chiffrer(cle, db);
     download(`gestion-locative-${today()}.json`, new Blob([JSON.stringify(env)], { type: 'application/json' }));
   };
+  // Import d'une sauvegarde : même parcours que le lien d'import (bandeau dans la page, sans fenêtre système).
+  function proposerDonnees(d, origine) {
+    if (!d || !Array.isArray(d.biens)) {
+      bandeauImport = { type: 'erreur', texte: `Import impossible : ${origine} non reconnu (il doit contenir une liste « biens »).` };
+    } else if (!db.biens.length) {
+      appliquerImport(d);
+    } else {
+      bandeauImport = {
+        type: 'proposition',
+        donnees: d,
+        texte: `${origine} : ${resumeDonnees(d)}. Ces données remplaceront vos données actuelles (${db.biens.length} bien(s), ${db.paiements.length} encaissement(s)).`,
+      };
+    }
+    render();
+    window.scrollTo(0, 0);
+  }
   actions.import = (_, input) => {
     const f = input.files[0];
+    input.value = '';
     if (!f) return;
     f.text().then((txt) => {
+      let d;
       try {
-        const d = JSON.parse(txt);
-        const remplacer = (donnees) => {
-          if (!Array.isArray(donnees.biens)) throw new Error('fichier non reconnu');
-          if (!confirm('Remplacer toutes les données actuelles par celles du fichier ?')) return;
-          db = C.migrer({ ...empty(), ...donnees });
-          save();
-          render();
-        };
-        if (!Coffre.estEnveloppe(d)) return remplacer(d);
-        openForm(
-          'Sauvegarde chiffrée',
-          [{ name: 'mdp', label: 'Mot de passe en vigueur lors de cette sauvegarde', type: 'password', required: true, full: true }],
-          {},
-          (v) => {
-            Coffre.ouvrir(v.mdp, d)
-              .then((o) => {
-                modal.close();
-                remplacer(o.donnees);
-              })
-              .catch((e) => alert(e.message));
-            return false;
-          },
-          'Ouvrir'
-        );
+        d = JSON.parse(txt);
       } catch (e) {
-        alert('Import impossible : ' + e.message);
+        bandeauImport = { type: 'erreur', texte: `Import impossible : « ${f.name} » n'est pas un fichier JSON valide.` };
+        render();
+        return;
       }
+      if (!Coffre.estEnveloppe(d)) return proposerDonnees(d, `Fichier « ${f.name} »`);
+      openForm(
+        'Sauvegarde chiffrée',
+        [{ type: 'html', html: '<p class="small muted" id="msg-sauvegarde"></p>' }, { name: 'mdp', label: 'Mot de passe en vigueur lors de cette sauvegarde', type: 'password', required: true, full: true }],
+        {},
+        (v) => {
+          Coffre.ouvrir(v.mdp, d)
+            .then((o) => {
+              modal.close();
+              proposerDonnees(o.donnees, `Sauvegarde « ${f.name} »`);
+            })
+            .catch((e) => {
+              const m = document.getElementById('msg-sauvegarde');
+              if (m) m.textContent = e.message;
+            });
+          return false;
+        },
+        'Ouvrir'
+      );
     });
   };
   actions.importOps = (_, input) => {
