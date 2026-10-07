@@ -103,7 +103,7 @@
     if (m) return `${m[2]}-${String(MOIS.indexOf(m[1]) + 1).padStart(2, '0')}`;
     m = t.match(new RegExp(`\\b(${MOIS.join('|')})\\s+(\\d{4})\\b`));
     if (m) return `${m[2]}-${String(MOIS.indexOf(m[1]) + 1).padStart(2, '0')}`;
-    m = t.match(/\b(\d{2})[/-](\d{4})\b/);
+    m = t.match(/(?<![\d/.-])(\d{2})[/-](\d{4})\b/);
     if (m && Number(m[1]) >= 1 && Number(m[1]) <= 12) return `${m[2]}-${m[1]}`;
     return null;
   }
@@ -186,6 +186,38 @@
     };
   }
 
+  /**
+   * Relevé de gérance couvrant plusieurs biens (un relevé par mandant / SCI).
+   * reperes : [{ id, motifs: ['rue garibaldi', 'bernard', 'lot 7', …] }]
+   * Le texte est découpé à la première mention de chaque bien ; chaque section est lue séparément.
+   * Retourne [] si moins de deux biens sont repérés (relevé à traiter comme un seul bien).
+   */
+  function extraireGeranceMulti(texte, reperes) {
+    const t = sansAccents(texte).toLowerCase();
+    const trouves = [];
+    for (const r of reperes || []) {
+      let idx = -1;
+      for (const m of r.motifs || []) {
+        const motif = sansAccents(m).toLowerCase().trim();
+        if (motif.length < 4) continue;
+        const i = t.indexOf(motif);
+        if (i >= 0 && (idx < 0 || i < idx)) idx = i;
+      }
+      if (idx >= 0) trouves.push({ id: r.id, idx });
+    }
+    if (trouves.length < 2) return [];
+    trouves.sort((a, b) => a.idx - b.idx);
+    // Repartir du début de la ligne où le bien est mentionné
+    const debutLigne = (i) => t.lastIndexOf('\n', i) + 1;
+    const periode = periodeMensuelle(texte);
+    const global = extraireGerance(texte);
+    return trouves.map((x, k) => {
+      const fin = k + 1 < trouves.length ? debutLigne(trouves[k + 1].idx) : texte.length;
+      const r = extraireGerance(texte.slice(debutLigne(x.idx), fin));
+      return { ...r, bienId: x.id, periode: periode || r.periode, date: global.date || r.date };
+    });
+  }
+
   /** Devine le type de document à partir de son texte. */
   function detecterType(texte, nomFichier) {
     const t = sansAccents(`${nomFichier || ''}\n${texte}`).toLowerCase();
@@ -247,7 +279,7 @@
     return ops;
   }
 
-  const api = { operationsDepuis, parseMontant, montantsDe, dates, periodeMensuelle, trimestre, detecterType, extraireAppel, extraireGerance, extraire, lignesPdfJs };
+  const api = { extraireGeranceMulti, operationsDepuis, parseMontant, montantsDe, dates, periodeMensuelle, trimestre, detecterType, extraireAppel, extraireGerance, extraire, lignesPdfJs };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Extract = api;
 })(typeof window !== 'undefined' ? window : globalThis);

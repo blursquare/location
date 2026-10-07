@@ -1,6 +1,6 @@
-# Gestion locative en copropriété
+# Gestion locative
 
-Application web autonome pour gérer des biens loués situés en copropriété : **loyers, charges, régularisation, prêts et revenus fonciers**.
+Application web autonome pour gérer des biens loués — détenus en **SCI** ou en nom propre, gérés **en direct ou par une agence**, **en copropriété ou non** : loyers, charges, régularisation, prêts et revenus fonciers.
 
 Aucune installation ni serveur : ouvrez `index.html` dans un navigateur, ou la version en ligne (GitHub Pages).
 
@@ -11,25 +11,26 @@ Aucune installation ni serveur : ouvrez `index.html` dans un navigateur, ou la v
 - Les sauvegardes exportées (*Paramètres → Exporter*) sont chiffrées avec le même mot de passe.
 - **Un mot de passe oublié ne peut pas être récupéré** : sans lui, les données et sauvegardes sont illisibles.
 - Le site publié ne contient que le code : aucune donnée personnelle n'est envoyée sur GitHub ni ailleurs.
+- Le site demande aux moteurs de recherche de **ne pas l'indexer** (balises `noindex, nofollow, noarchive`). GitHub Pages ne permet pas d'en interdire l'accès : qui connaît l'adresse voit l'écran de mot de passe, jamais vos données.
 
 ## Fonctionnalités
 
 | Module | Contenu |
 |---|---|
-| **Tableau de bord** | Encaissements, impayés à date, charges, échéances de prêt, cash-flow, capital restant dû, rendements brut et net, alertes (révision IRL, fin de bail, régularisation). |
-| **Biens** | Adresse, lots, surface, copropriété, syndic, tantièmes, prix d'achat et frais. |
+| **Tableau de bord** | Vue globale, par SCI ou par mode de gestion : encaissements, impayés à date, charges, échéances de prêt, cash-flow, capital restant dû, rendements brut et net, alertes (révision IRL, fin de bail, régularisation). |
+| **Biens** | Propriétaire (SCI à l'IR / à l'IS, nom propre, indivision, avec associés et parts), gestion directe ou par un gestionnaire, copropriété (syndic, lots, tantièmes) ou non, prix d'achat et frais. |
 | **Locataires & baux** | Loyer HC, provision sur charges, dépôt de garantie, garant, IRL de référence ; calcul de la **révision IRL**. |
 | **Loyers** | Grille mensuelle par bail (payé / partiel / impayé), prorata automatique à l'entrée et à la sortie, encaissement groupé, **quittances**, reçus partiels et **avis d'échéance** imprimables (PDF). |
-| **Charges** | Appels de fonds du syndic (génération trimestrielle avec fonds travaux ALUR), taxe foncière, PNO, travaux… avec la **part récupérable** ; **régularisation annuelle** par locataire et décompte imprimable. |
+| **Charges** | Charges payées en direct (bien hors copropriété), appels de fonds du syndic (génération trimestrielle avec fonds travaux ALUR), taxe foncière, PNO, travaux… avec la **part récupérable** ; **régularisation annuelle** par locataire et décompte imprimable. |
 | **Prêts** | Mensualité, assurance, différé, **tableau d'amortissement** annuel et mensuel, CRD, coût total, export CSV. |
-| **Fiscalité** | Estimation du résultat foncier (régime réel, repères de la déclaration 2044) et comparaison avec le micro-foncier. |
+| **Fiscalité** | Estimation du résultat foncier par propriétaire : 2044 en nom propre, 2072 pour une SCI à l'IR avec la quote-part de chaque associé, base de travail pour une SCI à l'IS. |
 
 ## Import automatique depuis Gmail
 
 L'onglet **Import Gmail** récupère lui-même les PDF joints à vos e-mails : appels de fonds du syndic et relevés (comptes rendus) de gérance de l'agence.
 
 1. **Connexion Google** (une fois) : créez un *ID client OAuth* de type « Application Web » dans la console Google Cloud, en activant la Gmail API (guide pas à pas dans l'onglet). L'accès est en **lecture seule** et le navigateur dialogue directement avec Google : vos e-mails ne passent par aucun autre serveur.
-2. **Règles** : une par expéditeur, par exemple `from:(@mon-syndic.fr)` → appels de fonds → bien « T2 Croix-Rousse », 70 % récupérable.
+2. **Règles** : une par expéditeur, par exemple `from:(@mon-syndic.fr)` → appels de fonds → bien « T2 Croix-Rousse », 70 % récupérable ; pour le gestionnaire, une règle « relevés de gérance » liée à lui (proposée automatiquement d'après son e-mail). Un relevé qui regroupe plusieurs biens est réparti automatiquement, une ligne par bien (repérage par adresse, lot ou locataire).
 3. **Chercher les nouveaux PDF** : l'outil lit chaque PDF (pdf.js), propose la date, les charges, le fonds travaux, le loyer encaissé, les honoraires… et reconnaît le bien si son adresse figure dans le document. Vous vérifiez, corrigez si besoin, puis importez. Les PDF déjà importés ou ignorés ne sont plus proposés.
 
 Google n'accepte pas la connexion depuis un fichier ouvert directement (`file://`) : utilisez la version en ligne, ou lancez `python3 -m http.server 8000` dans le dossier puis ouvrez `http://localhost:8000` (origine à déclarer dans l'ID client).
