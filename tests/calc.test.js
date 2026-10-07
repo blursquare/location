@@ -139,6 +139,7 @@ test('migration vers propriétaires et gestionnaires', () => {
 test('associés et quotes-parts', () => {
   assert.deepEqual(C.associes('Marie Dupont : 50\nPaul Dupont 50 %'), [{ nom: 'Marie Dupont', pct: 50 }, { nom: 'Paul Dupont', pct: 50 }]);
   assert.deepEqual(C.associes('A 300 parts; B 100 parts').map((a) => a.pct), [75, 25]);
+  assert.deepEqual(C.associes('Bastien\nSophie'), [{ nom: 'Bastien', pct: null }, { nom: 'Sophie', pct: null }]);
 });
 
 test('synthèse filtrée par plusieurs biens, forfait 20 € hors SCI', () => {

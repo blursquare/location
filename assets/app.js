@@ -565,7 +565,7 @@
       const nb = db.biens.filter((b) => b.proprietaireId === p.id).length;
       const ass = C.associes(p.associes);
       return `<tr><td><b>${h(p.nom)}</b><div class="small muted">${h(p.siren ? 'SIREN ' + p.siren : '')}</div></td><td>${h(typeProprio(p))}</td>
-        <td>${h(p.gerant || '—')}</td><td class="small">${ass.map((a) => `${h(a.nom)} ${pct(a.pct)}`).join('<br>') || '—'}</td><td class="num">${nb}</td>
+        <td>${h(p.gerant || '—')}</td><td class="small">${ass.map((a) => `${h(a.nom)}${a.pct === null ? '' : ' ' + pct(a.pct)}`).join('<br>') || '—'}</td><td class="num">${nb}</td>
         <td><button class="link" data-act="editProprio" data-id="${p.id}">Modifier</button><button class="link danger" data-act="delProprio" data-id="${p.id}">Supprimer</button></td></tr>`;
     });
     const gests = db.gestionnaires.map((g) => {
@@ -1319,9 +1319,9 @@
       if (p.type === 'sci_is') {
         note = `<div class="card" style="border-color:var(--warn);margin-top:8px"><b>SCI à l'IS</b> : le résultat imposable se calcule en comptabilité commerciale (amortissement du bien, des frais d'acquisition…). Le tableau ci-dessous n'est qu'une base de travail pour votre expert-comptable.</div>`;
       } else if (p.type === 'sci_ir' || p.type === 'indivision') {
-        note = ass.length
+        note = ass.length && ass.every((a) => a.pct !== null)
           ? `<div class="small" style="margin-top:8px"><b>Quote-part de chaque ${p.type === 'indivision' ? 'indivisaire' : 'associé'}</b> (à reporter sur sa 2044) : ${ass.map((a) => `${h(a.nom)} ${pct(a.pct)} → ${signed(C.round2((tot.resultatFoncier * a.pct) / 100))}`).join(' · ')}</div>`
-          : `<p class="small muted">Renseignez les associés et leurs parts (onglet Biens) pour obtenir la quote-part de chacun.</p>`;
+          : `<p class="small muted">Renseignez les parts de chaque associé (onglet Biens, ex. « Sophie GOSSART : 50 ») pour obtenir la quote-part de chacun.</p>`;
       } else {
         note = `<div class="small muted" style="margin-top:8px">Micro-foncier (si recettes foncières totales du foyer ≤ 15 000 €) : base imposable ${eur(tot.revenusBruts * 0.7)} après abattement de 30 %.</div>`;
       }
