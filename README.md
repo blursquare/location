@@ -16,6 +16,32 @@ Aucune installation ni serveur : ouvrez `index.html` dans un navigateur. Les don
 | **Prêts** | Mensualité, assurance, différé, **tableau d'amortissement** annuel et mensuel, CRD, coût total, export CSV. |
 | **Fiscalité** | Estimation du résultat foncier (régime réel, repères de la déclaration 2044) et comparaison avec le micro-foncier. |
 
+## Importer des opérations (syndic, gérance)
+
+*Paramètres → Importer des opérations* ajoute des charges et des encaissements **sans écraser** les données existantes. Chaque opération porte une `source` unique (ex. identifiant du mail d'origine) : un même fichier importé deux fois ne crée pas de doublon.
+
+```json
+{
+  "charges": [
+    { "bien": "T2 Croix-Rousse", "date": "2026-10-01", "categorie": "copro",
+      "libelle": "Appel de fonds T4 2026", "montant": 420, "partRecuperable": 290,
+      "source": "gmail:18f2a…" }
+  ],
+  "paiements": [
+    { "locataire": "Marie Martin", "periode": "2026-10", "montant": 870,
+      "date": "2026-10-08", "note": "Relevé de gérance octobre", "source": "gmail:18f2b…" }
+  ]
+}
+```
+
+- `bien` : nom du bien (ou son identifiant) ; `locataire` : nom du locataire (le bail actif sur la période est retenu).
+- `categorie` : `copro`, `copro_travaux`, `taxe_fonciere`, `assurance_pno`, `gestion`, `travaux`, `amelioration`, `autre`.
+- Relevé de gérance : le loyer encaissé par l'agence va dans `paiements`, les honoraires dans `charges` (catégorie `gestion`).
+
+## Mise en ligne (GitHub Pages)
+
+Le workflow `.github/workflows/pages.yml` teste puis publie le site à chaque push sur `main`. À activer une fois dans *Settings → Pages → Source : GitHub Actions*. Seul le code est publié ; les données restent dans le navigateur de chacun.
+
 ## Développement
 
 - `assets/calc.js` : calculs purs (prêts, échéances, régularisation, synthèses), testés.

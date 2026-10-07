@@ -90,3 +90,37 @@ test('synthèse annuelle', () => {
   assert.equal(s.cashFlow, 9600 - 2500);
   assert.equal(s.rendementBrut, C.round2((8400 / 162000) * 100));
 });
+
+test("fusion d'opérations importées sans doublon", () => {
+  const data = {
+    biens: [{ id: 'x', nom: 'T2 Croix-Rousse', adresse: '12 rue d’Austerlitz' }, { id: 'y', nom: 'Studio' }],
+    baux: [
+      { id: 'a', bienId: 'x', locataire: 'Marie Martin', dateDebut: '2024-01-01', dateFin: '2025-12-31' },
+      { id: 'b', bienId: 'x', locataire: 'Paul Durand', dateDebut: '2026-01-01' },
+    ],
+    paiements: [],
+    charges: [{ id: 'c0', bienId: 'x', date: '2026-01-01', montant: 1, source: 'mail-1' }],
+    prets: [],
+  };
+  let n = 0;
+  const imp = {
+    charges: [
+      { bien: 't2 croix-rousse', date: '2026-04-01', libelle: 'Appel T2', montant: 420, partRecuperable: 290, source: 'mail-2' },
+      { bien: 'T2 Croix-Rousse', date: '2026-01-01', montant: 1, source: 'mail-1' },
+      { bien: 'Inconnu', date: '2026-01-01', montant: 5 },
+    ],
+    paiements: [
+      { bien: 'T2 Croix-Rousse', periode: '2026-03', montant: 800, source: 'crg-3' },
+      { locataire: 'Marie', periode: '2025-06', montant: 750, source: 'crg-old' },
+      { locataire: 'Paul', periode: '2026-03', montant: 800, source: 'crg-3' },
+    ],
+  };
+  const r = C.fusionnerOperations(data, imp, () => 'n' + n++);
+  assert.deepEqual(r.ajouts, { charges: 1, paiements: 2 });
+  assert.equal(r.ignores, 2);
+  assert.equal(r.erreurs.length, 1);
+  assert.equal(r.data.charges[1].categorie, 'copro');
+  assert.equal(r.data.paiements[0].bailId, 'b'); // bail actif à la période
+  assert.equal(r.data.paiements[1].bailId, 'a');
+  assert.equal(data.charges.length, 1); // données d'origine intactes
+});

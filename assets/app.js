@@ -879,6 +879,10 @@
         <div class="toolbar"><button data-act="export">⬇ Exporter (JSON)</button>
         <label class="btn secondary" style="border:1px solid var(--border);background:var(--surface);color:var(--text)">⬆ Importer<input type="file" accept=".json,application/json" data-change="import" hidden></label>
         <button class="secondary" data-act="exportCSV">Exporter paiements & charges (CSV)</button></div></div>
+      <div class="card" style="margin-top:12px"><h2 style="margin-top:0">Importer des opérations</h2>
+        <p class="small muted">Ajoute des appels de fonds du syndic, des encaissements ou des frais tirés des relevés de gérance (fichier préparé par Claude à partir de vos e-mails, par exemple),
+        <b>sans remplacer</b> vos données. Les pièces déjà importées sont ignorées.</p>
+        <label class="btn" style="display:inline-block">⬆ Importer des opérations (JSON)<input type="file" accept=".json,application/json" data-change="importOps" hidden></label></div>
       <div class="card" style="margin-top:12px"><h2 style="margin-top:0">Zone sensible</h2>
         <div class="toolbar"><button class="secondary" data-act="demo">Charger des données d'exemple</button>
         <button class="danger" data-act="reset">Tout effacer</button></div></div>`;
@@ -901,6 +905,30 @@
         if (!Array.isArray(d.biens)) throw new Error('fichier non reconnu');
         if (!confirm('Remplacer toutes les données actuelles par celles du fichier ?')) return;
         db = { ...empty(), ...d };
+        save();
+        render();
+      } catch (e) {
+        alert('Import impossible : ' + e.message);
+      }
+    });
+  };
+  actions.importOps = (_, input) => {
+    const f = input.files[0];
+    input.value = '';
+    if (!f) return;
+    f.text().then((txt) => {
+      try {
+        const imp = JSON.parse(txt);
+        if (!Array.isArray(imp.charges) && !Array.isArray(imp.paiements)) throw new Error('le fichier doit contenir « charges » et/ou « paiements »');
+        const r = C.fusionnerOperations(db, imp, uid);
+        const msg = [
+          `${r.ajouts.charges} charge(s) et ${r.ajouts.paiements} encaissement(s) à ajouter.`,
+          r.ignores ? `${r.ignores} opération(s) déjà présente(s), ignorée(s).` : '',
+          r.erreurs.length ? `\n${r.erreurs.length} opération(s) non importable(s) :\n- ${r.erreurs.slice(0, 10).join('\n- ')}` : '',
+        ].filter(Boolean).join('\n');
+        if (!r.ajouts.charges && !r.ajouts.paiements) return alert('Rien à importer.\n' + msg);
+        if (!confirm(msg + '\n\nConfirmer l\'import ?')) return;
+        db = r.data;
         save();
         render();
       } catch (e) {

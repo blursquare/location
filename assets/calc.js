@@ -291,7 +291,97 @@
     return r;
   }
 
+  // ---------- Import d'opérations (appels de fonds, relevés de gérance…) ----------
+  const norm = (s) =>
+    String(s || '')
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .toLowerCase()
+      .trim();
+
+  /**
+   * Fusionne un lot d'opérations dans les données, sans doublon.
+   * imp: { charges: [...], paiements: [...] }
+   *  - charge   : { bien, date, categorie, libelle, montant, partRecuperable, source }
+   *  - paiement : { bail | locataire, bien, periode, montant, date, mode, note, source }
+   * `bien` / `bail` : identifiant ou nom (bien) / nom du locataire (bail).
+   * `source` : identifiant unique de la pièce d'origine (ex. id du mail) servant à dédoublonner.
+   * Retourne { data, ajouts: { charges, paiements }, ignores, erreurs }.
+   */
+  function fusionnerOperations(data, imp, newId) {
+    const d = JSON.parse(JSON.stringify(data));
+    const res = { data: d, ajouts: { charges: 0, paiements: 0 }, ignores: 0, erreurs: [] };
+    const sources = new Set([...d.charges, ...d.paiements].map((x) => x.source).filter(Boolean));
+    const trouveBien = (ref) => {
+      if (!ref) return d.biens.length === 1 ? d.biens[0] : null;
+      const n = norm(ref);
+      return (
+        d.biens.find((b) => b.id === ref) ||
+        d.biens.find((b) => norm(b.nom) === n) ||
+        d.biens.find((b) => n && (norm(b.adresse).includes(n) || n.includes(norm(b.nom)) || (b.lot && norm(b.lot) === n))) ||
+        null
+      );
+    };
+    const trouveBail = (op) => {
+      if (op.bail) {
+        const b = d.baux.find((x) => x.id === op.bail);
+        if (b) return b;
+      }
+      const n = norm(op.locataire || op.bail);
+      const bien = op.bien ? trouveBien(op.bien) : null;
+      const candidats = d.baux.filter((b) => (!n || norm(b.locataire).includes(n) || n.includes(norm(b.locataire))) && (!bien || b.bienId === bien.id));
+      const per = op.periode || '';
+      const actifs = candidats.filter((b) => (!per || b.dateDebut.slice(0, 7) <= per) && (!b.dateFin || !per || b.dateFin.slice(0, 7) >= per));
+      return actifs[0] || candidats[0] || null;
+    };
+    const dejaVu = (src) => {
+      if (!src) return false;
+      if (sources.has(src)) return true;
+      sources.add(src);
+      return false;
+    };
+
+    (imp.charges || []).forEach((c, i) => {
+      const bien = trouveBien(c.bien || c.bienId);
+      if (!bien) return res.erreurs.push(`Charge n°${i + 1} (${c.libelle || ''}) : bien « ${c.bien || '?'} » introuvable`);
+      if (!c.date || !Number.isFinite(Number(c.montant))) return res.erreurs.push(`Charge n°${i + 1} : date ou montant manquant`);
+      if (dejaVu(c.source)) return res.ignores++;
+      d.charges.push({
+        id: newId(),
+        bienId: bien.id,
+        categorie: c.categorie && CATEGORIES[c.categorie] ? c.categorie : 'copro',
+        libelle: c.libelle || 'Charge importée',
+        date: c.date,
+        montant: Number(c.montant),
+        partRecuperable: Number(c.partRecuperable) || 0,
+        notes: c.notes || '',
+        source: c.source || '',
+      });
+      res.ajouts.charges++;
+    });
+
+    (imp.paiements || []).forEach((p, i) => {
+      const bail = trouveBail(p);
+      if (!bail) return res.erreurs.push(`Paiement n°${i + 1} : bail de « ${p.locataire || p.bail || '?'} » introuvable`);
+      if (!/^\d{4}-\d{2}$/.test(p.periode || '') || !Number.isFinite(Number(p.montant))) return res.erreurs.push(`Paiement n°${i + 1} : période (AAAA-MM) ou montant invalide`);
+      if (dejaVu(p.source)) return res.ignores++;
+      d.paiements.push({
+        id: newId(),
+        bailId: bail.id,
+        periode: p.periode,
+        montant: Number(p.montant),
+        date: p.date || `${p.periode}-01`,
+        mode: p.mode || 'Virement',
+        note: p.note || '',
+        source: p.source || '',
+      });
+      res.ajouts.paiements++;
+    });
+    return res;
+  }
+
   const api = {
+    fusionnerOperations,
     round2,
     parseDate,
     addMonths,
