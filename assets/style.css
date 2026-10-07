@@ -144,3 +144,18 @@ summary { cursor: pointer; color: var(--accent); }
   .form-grid { grid-template-columns: 1fr; }
   .kpi .value { font-size: 18px; }
 }
+
+/* Suggestions d'adresse et recherche de société */
+.ac { position: relative; }
+.ac-liste {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 20; margin-top: 2px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .15); max-height: 240px; overflow-y: auto; color: var(--text);
+}
+.ac-item { padding: 8px 10px; cursor: pointer; font-size: 14px; }
+.ac-item:hover, .ac-item.actif { background: var(--none-bg); }
+.ac-msg { padding: 8px 10px; font-size: 13px; color: var(--muted); }
+.entreprise { background: var(--none-bg); border-radius: 10px; padding: 10px; }
+.ent-barre { display: flex; gap: 8px; }
+.ent-item { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.ent-item:last-child { border-bottom: none; }

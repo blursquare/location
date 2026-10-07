@@ -10,6 +10,7 @@ Aucune installation ni serveur : ouvrez `index.html` dans un navigateur, ou la v
 - L'outil se **verrouille** via le bouton 🔒 ou après 15 minutes d'inactivité.
 - Les sauvegardes exportées (*Paramètres → Exporter*) sont chiffrées avec le même mot de passe.
 - **Un mot de passe oublié ne peut pas être récupéré** : sans lui, les données et sauvegardes sont illisibles.
+- Les aides à la saisie n'envoient que le texte recherché (début d'adresse, SIREN ou nom de société) aux services publics `data.geopf.fr` et `recherche-entreprises.api.gouv.fr` ; aucune autre donnée ne quitte le navigateur, hormis l'import Gmail (dialogue direct avec Google).
 - Le site publié ne contient que le code : aucune donnée personnelle n'est envoyée sur GitHub ni ailleurs.
 - Le site demande aux moteurs de recherche de **ne pas l'indexer** (balises `noindex, nofollow, noarchive`). GitHub Pages ne permet pas d'en interdire l'accès : qui connaît l'adresse voit l'écran de mot de passe, jamais vos données.
 
@@ -19,6 +20,7 @@ Aucune installation ni serveur : ouvrez `index.html` dans un navigateur, ou la v
 |---|---|
 | **Tableau de bord** | Vue globale, par SCI ou par mode de gestion : encaissements, impayés à date, charges, échéances de prêt, cash-flow, capital restant dû, rendements brut et net, alertes (révision IRL, fin de bail, régularisation). |
 | **Biens** | Propriétaire (SCI à l'IR / à l'IS, nom propre, indivision, avec associés et parts), gestion directe ou par un gestionnaire, copropriété (syndic, lots, tantièmes) ou non, prix d'achat et frais. |
+| **Aides à la saisie** | Adresses proposées pendant la frappe (Base Adresse Nationale) ; fiche d'une SCI ou d'un gestionnaire remplie à partir de son **SIREN**, SIRET ou nom (API Recherche d'entreprises) : dénomination, siège, dirigeant, forme. |
 | **Locataires & baux** | Loyer HC, provision sur charges, dépôt de garantie, garant, IRL de référence ; calcul de la **révision IRL**. |
 | **Loyers** | Grille mensuelle par bail (payé / partiel / impayé), prorata automatique à l'entrée et à la sortie, encaissement groupé, **quittances**, reçus partiels et **avis d'échéance** imprimables (PDF). |
 | **Charges** | Charges payées en direct (bien hors copropriété), appels de fonds du syndic (génération trimestrielle avec fonds travaux ALUR), taxe foncière, PNO, travaux… avec la **part récupérable** ; **régularisation annuelle** par locataire et décompte imprimable. |
@@ -67,6 +69,7 @@ Le workflow `.github/workflows/pages.yml` teste puis publie le site à chaque pu
 ## Développement
 
 - `assets/calc.js` : calculs purs (prêts, échéances, régularisation, synthèses), testés.
+- `assets/annuaire.js` : recherche d'adresses et de sociétés (SIREN) dans les référentiels publics, testée.
 - `assets/coffre.js` : chiffrement des données par mot de passe (Web Crypto), testé.
 - `assets/extract.js` : lecture des montants dans le texte des appels de fonds et relevés de gérance, testée.
 - `assets/gmail.js` : connexion Gmail (Google Identity Services) et lecture des PDF (pdf.js, chargé à la demande).

@@ -117,6 +117,143 @@
     }
   });
 
+  // ---------- Aides à la saisie : adresses (Base Adresse Nationale) et sociétés (SIREN) ----------
+  function brancherAdresse(champ) {
+    const mode = champ.dataset.adresse;
+    const label = champ.closest('label');
+    label.classList.add('ac');
+    const liste = document.createElement('div');
+    liste.className = 'ac-liste';
+    liste.hidden = true;
+    label.appendChild(liste);
+    let minuteur;
+    let seq = 0;
+    let items = [];
+    let actif = -1;
+    let dernierChoix = null;
+    const afficher = () => {
+      liste.innerHTML = items.map((a, i) => `<div class="ac-item ${i === actif ? 'actif' : ''}" data-i="${i}">${h(a.label)}</div>`).join('');
+      liste.hidden = !items.length;
+    };
+    const choisir = (a) => {
+      dernierChoix = mode === 'bloc' ? `${a.ligne1}\n${a.ligne2}` : `${a.ligne1}, ${a.ligne2}`;
+      champ.value = dernierChoix;
+      items = [];
+      liste.hidden = true;
+    };
+    liste.addEventListener('mousedown', (e) => {
+      const it = e.target.closest('.ac-item');
+      if (!it) return;
+      e.preventDefault();
+      choisir(items[Number(it.dataset.i)]);
+    });
+    champ.addEventListener('input', () => {
+      clearTimeout(minuteur);
+      if (champ.value === dernierChoix) return;
+      const q = champ.value.replace(/\n/g, ' ');
+      minuteur = setTimeout(async () => {
+        const n = ++seq;
+        try {
+          const r = await Annuaire.rechercherAdresses(q);
+          if (n !== seq) return;
+          items = r;
+          actif = -1;
+          afficher();
+        } catch (err) {
+          liste.innerHTML = `<div class="ac-msg">Suggestions indisponibles : ${h(err.message)}</div>`;
+          liste.hidden = false;
+        }
+      }, 250);
+    });
+    champ.addEventListener('keydown', (e) => {
+      if (liste.hidden || !items.length) return;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        actif = (actif + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+        afficher();
+      } else if (e.key === 'Enter' && actif >= 0) {
+        e.preventDefault();
+        choisir(items[actif]);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        liste.hidden = true;
+      }
+    });
+    champ.addEventListener('blur', () => setTimeout(() => (liste.hidden = true), 150));
+  }
+
+  function brancherEntreprise(bloc) {
+    const q = bloc.querySelector('.ent-q');
+    const res = bloc.querySelector('.ent-res');
+    let trouvees = [];
+    const remplir = (e) => {
+      const set = (nom, val) => {
+        const c = modalForm.querySelector(`[name="${nom}"]`);
+        if (c && val) c.value = val;
+      };
+      set('nom', e.nom);
+      set('siren', e.siren);
+      set('adresse', e.adresse);
+      set('gerant', e.gerant);
+      const type = modalForm.querySelector('[name="type"]');
+      if (type && e.estSCI && !/^sci/.test(type.value)) type.value = 'sci_ir';
+      majVisibilite();
+      res.innerHTML = `<p class="pos">Fiche complétée avec ${h(e.nom)}. ${e.gerant && !e.gerantCertain ? `Le registre ne précise pas qui est gérant : vérifiez « ${h(e.gerant)} » (dirigeants : ${e.dirigeants.map((d) => h(d.nom)).join(', ')}). ` : ''}${e.estSCI ? "Vérifiez le régime fiscal (IR ou IS) : il n'est pas public. " : ''}Les associés et leurs parts ne figurent pas au registre public : complétez-les.</p>`;
+    };
+    const chercher = async () => {
+      const texte = q.value.trim();
+      if (texte.length < 3) return;
+      res.innerHTML = '<p class="muted">Recherche…</p>';
+      try {
+        trouvees = await Annuaire.rechercherEntreprises(texte);
+        if (!trouvees.length) return (res.innerHTML = '<p class="muted">Aucune société trouvée.</p>');
+        if (trouvees.length === 1 && Annuaire.sirenValide(texte.replace(/\s/g, '').slice(0, 9))) return remplir(trouvees[0]);
+        res.innerHTML = trouvees
+          .map(
+            (e, i) => `<div class="ent-item"><div><b>${h(e.nom)}</b> ${e.active ? '' : '<span class="badge st-due">cessée</span>'}<br>
+              <span class="muted">SIREN ${h(e.siren)} · ${h(e.adresseLigne)}${e.gerant ? ` · ${h(e.gerant)}` : ''}${e.dateCreation ? ` · créée le ${dateFr(e.dateCreation)}` : ''}</span></div>
+              <button type="button" class="secondary" data-ent="${i}">Utiliser</button></div>`
+          )
+          .join('');
+      } catch (err) {
+        res.innerHTML = `<p class="neg">Recherche impossible : ${h(err.message)}</p>`;
+      }
+    };
+    bloc.querySelector('.ent-go').onclick = chercher;
+    q.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        chercher();
+      }
+    });
+    q.addEventListener('input', () => {
+      const c = q.value.replace(/\s/g, '');
+      if (/^\d{9}$|^\d{14}$/.test(c)) chercher();
+    });
+    res.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-ent]');
+      if (b) remplir(trouvees[Number(b.dataset.ent)]);
+    });
+    // Un SIREN saisi directement dans son champ déclenche aussi la recherche si la fiche est vide.
+    const siren = modalForm.querySelector('[name="siren"]');
+    const nom = modalForm.querySelector('[name="nom"]');
+    if (siren) {
+      siren.addEventListener('change', () => {
+        if (Annuaire.sirenValide(siren.value) && nom && !nom.value.trim()) {
+          q.value = siren.value;
+          chercher();
+        }
+      });
+    }
+  }
+
+  function brancherAides() {
+    if (!window.Annuaire) return;
+    for (const c of modalForm.querySelectorAll('[data-adresse]')) brancherAdresse(c);
+    for (const b of modalForm.querySelectorAll('.entreprise')) brancherEntreprise(b);
+  }
+
   // Champs conditionnels : data-show-if="champ" data-show-val="valeur"
   function majVisibilite() {
     for (const lab of modalForm.querySelectorAll('[data-show-if]')) {
@@ -137,6 +274,12 @@
     const body = fields
       .map((f) => {
         if (f.type === 'html') return `<div class="full">${f.html}</div>`;
+        if (f.type === 'entreprise') {
+          return `<div class="full entreprise"><label>Retrouver la société dans le registre public (SIREN, SIRET ou nom)
+            <span class="ent-barre"><input type="search" class="ent-q" placeholder="ex. 398 599 324 ou SCI Les Canuts" autocomplete="off"><button type="button" class="secondary ent-go">Rechercher</button></span></label>
+            <div class="ent-res small"></div></div>`;
+        }
+        const aide = f.adresse ? `data-adresse="${f.adresse}" autocomplete="off"` : '';
         const si = f.showIf ? `data-show-if="${f.showIf[0]}" data-show-val="${h(String(f.showIf[1]))}"` : '';
         const v = initial[f.name] ?? f.default ?? '';
         const req = f.required ? 'required' : '';
@@ -148,19 +291,20 @@
             .join('');
           input = `<select name="${f.name}" ${req}>${f.placeholder ? `<option value="">${h(f.placeholder)}</option>` : ''}${opts}</select>`;
         } else if (f.type === 'textarea') {
-          input = `<textarea name="${f.name}" rows="3">${h(v)}</textarea>`;
+          input = `<textarea name="${f.name}" rows="3" ${aide}>${h(v)}</textarea>`;
         } else if (f.type === 'checkbox') {
           return `<label class="check ${cls}" ${si}><input type="checkbox" name="${f.name}" ${v ? 'checked' : ''}> ${h(f.label)}</label>`;
         } else {
           const step = f.type === 'number' ? `step="${f.step || '0.01'}"` : '';
           const min = f.min !== undefined ? `min="${f.min}"` : '';
-          input = `<input type="${f.type || 'text'}" name="${f.name}" value="${h(v)}" ${step} ${min} ${req}>`;
+          input = `<input type="${f.type || 'text'}" name="${f.name}" value="${h(v)}" ${step} ${min} ${req} ${aide}>`;
         }
         return `<label class="${cls}" ${si}>${h(f.label)}${f.required ? ' *' : ''}${input}${f.help ? `<span class="help">${h(f.help)}</span>` : ''}</label>`;
       })
       .join('');
     document.getElementById('modal-body').innerHTML = `<div class="form-grid">${body}</div>`;
     majVisibilite();
+    brancherAides();
     modalSubmit = (values) => onSubmit({ ...initial, ...values });
     modal.showModal();
     return modal;
@@ -362,7 +506,7 @@
   const champsBien = () => [
     { name: 'nom', label: 'Nom du bien', required: true, help: 'Ex. : T2 rue Victor Hugo' },
     { name: 'type', label: 'Type', type: 'select', options: [['appartement', 'Appartement'], ['studio', 'Studio'], ['maison', 'Maison'], ['parking', 'Parking / box'], ['local', 'Local commercial']] },
-    { name: 'adresse', label: 'Adresse', full: true, required: true },
+    { name: 'adresse', label: 'Adresse', full: true, required: true, adresse: 'ligne', help: 'Tapez le début de l’adresse puis choisissez une suggestion' },
     { name: 'proprietaireId', label: 'Propriétaire', type: 'select', options: db.proprietaires.map((p) => [p.id, p.nom]), placeholder: db.proprietaires.length ? '' : '— ajoutez d’abord une SCI ou un propriétaire —' },
     { name: 'surface', label: 'Surface (m²)', type: 'number' },
     { name: 'gestionMode', label: 'Gestion locative', type: 'select', options: [['direct', 'En direct (sans agence)'], ['agence', 'Confiée à un gestionnaire / agence']] },
@@ -380,16 +524,20 @@
     { name: 'notes', label: 'Notes', type: 'textarea' },
   ];
   const champsProprio = [
+    { type: 'entreprise' },
     { name: 'nom', label: 'Dénomination', required: true, help: 'Ex. : SCI Les Canuts' },
     { name: 'type', label: 'Forme', type: 'select', options: Object.entries(C.TYPES_PROPRIETAIRE).map(([k, v]) => [k, v.label]) },
     { name: 'gerant', label: 'Gérant / représentant', help: 'Signataire des quittances' },
     { name: 'siren', label: 'SIREN' },
-    { name: 'adresse', label: 'Adresse (siège)', type: 'textarea' },
+    { name: 'adresse', label: 'Adresse (siège)', type: 'textarea', adresse: 'bloc' },
     { name: 'associes', label: 'Associés et parts', type: 'textarea', help: 'Une ligne par associé, ex. « Marie Dupont : 50 » — sert à répartir le résultat fiscal' },
     { name: 'notes', label: 'Notes', type: 'textarea' },
   ];
   const champsGestionnaire = [
-    { name: 'nom', label: 'Nom du gestionnaire / agence', required: true, full: true },
+    { type: 'entreprise' },
+    { name: 'nom', label: 'Nom du gestionnaire / agence', required: true },
+    { name: 'siren', label: 'SIREN' },
+    { name: 'adresse', label: 'Adresse', type: 'textarea', adresse: 'bloc' },
     { name: 'contact', label: 'Interlocuteur' },
     { name: 'email', label: 'E-mail', type: 'email', help: 'Sert à proposer une règle d’import Gmail' },
     { name: 'telephone', label: 'Téléphone' },
