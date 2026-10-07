@@ -9,9 +9,12 @@
 <body>
   <header class="topbar">
     <div class="brand">🏠 Gestion locative <small>copropriété</small></div>
-    <label class="year">Année
-      <select id="annee"></select>
-    </label>
+    <div class="top-actions">
+      <label class="year">Année
+        <select id="annee"></select>
+      </label>
+      <button id="verrou" class="secondary" title="Verrouiller">🔒</button>
+    </div>
   </header>
   <nav id="nav" class="nav">
     <button data-view="dashboard">Tableau de bord</button>
@@ -37,6 +40,7 @@
     </form>
   </dialog>
 
+  <script src="assets/coffre.js"></script>
   <script src="assets/calc.js"></script>
   <script src="assets/extract.js"></script>
   <script src="assets/gmail.js"></script>

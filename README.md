@@ -2,7 +2,15 @@
 
 Application web autonome pour gérer des biens loués situés en copropriété : **loyers, charges, régularisation, prêts et revenus fonciers**.
 
-Aucune installation ni serveur : ouvrez `index.html` dans un navigateur. Les données sont enregistrées **dans le navigateur** (localStorage) ; utilisez *Paramètres → Exporter* pour sauvegarder ou transférer vos données (fichier JSON).
+Aucune installation ni serveur : ouvrez `index.html` dans un navigateur, ou la version en ligne (GitHub Pages).
+
+## Mot de passe et confidentialité
+
+- Au premier lancement, l'outil demande de **choisir un mot de passe**. Toutes les données sont **chiffrées** avec lui (AES-256-GCM, clé dérivée par PBKDF2-SHA256) avant d'être enregistrées dans le navigateur ; elles ne sont déchiffrées qu'en mémoire, le temps de la session.
+- L'outil se **verrouille** via le bouton 🔒 ou après 15 minutes d'inactivité.
+- Les sauvegardes exportées (*Paramètres → Exporter*) sont chiffrées avec le même mot de passe.
+- **Un mot de passe oublié ne peut pas être récupéré** : sans lui, les données et sauvegardes sont illisibles.
+- Le site publié ne contient que le code : aucune donnée personnelle n'est envoyée sur GitHub ni ailleurs.
 
 ## Fonctionnalités
 
@@ -57,6 +65,7 @@ Le workflow `.github/workflows/pages.yml` teste puis publie le site à chaque pu
 ## Développement
 
 - `assets/calc.js` : calculs purs (prêts, échéances, régularisation, synthèses), testés.
+- `assets/coffre.js` : chiffrement des données par mot de passe (Web Crypto), testé.
 - `assets/extract.js` : lecture des montants dans le texte des appels de fonds et relevés de gérance, testée.
 - `assets/gmail.js` : connexion Gmail (Google Identity Services) et lecture des PDF (pdf.js, chargé à la demande).
 - `assets/app.js` : interface (JavaScript natif, sans dépendance).

@@ -18,23 +18,38 @@
     prets: [],
   });
 
-  function load() {
+  // Les données sont chiffrées avec le mot de passe (voir coffre.js) et ne sont
+  // déchiffrées qu'en mémoire, le temps de la session.
+  const VAULT_KEY = 'gestion-location-coffre-v1';
+  const VERROU_MINUTES = 15;
+  const lireLocal = (k) => {
     try {
-      const raw = localStorage.getItem(STORE_KEY);
-      if (raw) return { ...empty(), ...JSON.parse(raw) };
+      return localStorage.getItem(k);
     } catch (e) {
-      console.warn('Lecture des données impossible', e);
+      return null;
     }
-    return empty();
-  }
-  let db = load();
+  };
+  let db = empty();
+  let cle = null;
+  let enregistrements = Promise.resolve();
+  let enCours = 0;
   function save() {
-    try {
-      localStorage.setItem(STORE_KEY, JSON.stringify(db));
-    } catch (e) {
-      alert("Impossible d'enregistrer les données dans le navigateur : " + e.message);
-    }
+    if (!cle) return;
+    const instantane = JSON.parse(JSON.stringify(db));
+    const c = cle;
+    enCours++;
+    enregistrements = enregistrements
+      .then(() => Coffre.chiffrer(c, instantane))
+      .then((env) => {
+        localStorage.setItem(VAULT_KEY, JSON.stringify(env));
+        localStorage.removeItem(STORE_KEY); // anciennes données non chiffrées
+      })
+      .catch((e) => alert("Impossible d'enregistrer les données dans le navigateur : " + e.message))
+      .finally(() => enCours--);
   }
+  window.addEventListener('beforeunload', (e) => {
+    if (enCours) e.preventDefault();
+  });
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
   function upsert(coll, item) {
@@ -176,6 +191,7 @@
   });
 
   function render() {
+    if (!cle) return; // verrouillé : l'écran de mot de passe reste affiché
     fillYears();
     for (const b of nav.querySelectorAll('button')) b.classList.toggle('active', b.dataset.view === view);
     const fn = views[view] || views.dashboard;
@@ -1089,10 +1105,15 @@
         <button class="secondary" data-act="editBailleur">Modifier</button></div>
       <div class="card" style="margin-top:12px"><h2 style="margin-top:0">Sauvegarde</h2>
         <p class="small muted">Les données sont stockées dans ce navigateur uniquement (${n('biens')} biens, ${n('baux')} baux, ${n('paiements')} paiements, ${n('charges')} charges, ${n('prets')} prêts).
-        Exportez régulièrement un fichier de sauvegarde ; il permet aussi de transférer les données sur un autre appareil.</p>
+        Exportez régulièrement un fichier de sauvegarde ; il permet aussi de transférer les données sur un autre appareil.
+        La sauvegarde est chiffrée : il faudra le mot de passe actuel pour la réimporter.</p>
         <div class="toolbar"><button data-act="export">⬇ Exporter (JSON)</button>
         <label class="btn secondary" style="border:1px solid var(--border);background:var(--surface);color:var(--text)">⬆ Importer<input type="file" accept=".json,application/json" data-change="import" hidden></label>
         <button class="secondary" data-act="exportCSV">Exporter paiements & charges (CSV)</button></div></div>
+      <div class="card" style="margin-top:12px"><h2 style="margin-top:0">Mot de passe</h2>
+        <p class="small muted">Vos données sont chiffrées avec ce mot de passe (AES-256). L'outil se verrouille après ${VERROU_MINUTES} minutes d'inactivité.
+        <b>Un mot de passe oublié ne peut pas être récupéré</b> : conservez-le précieusement.</p>
+        <button class="secondary" data-act="changerMdp">Changer le mot de passe</button></div>
       <div class="card" style="margin-top:12px"><h2 style="margin-top:0">Importer des opérations</h2>
         <p class="small muted">Ajoute des appels de fonds du syndic, des encaissements ou des frais tirés des relevés de gérance (fichier préparé par Claude à partir de vos e-mails, par exemple),
         <b>sans remplacer</b> vos données. Les pièces déjà importées sont ignorées.</p>
@@ -1106,9 +1127,9 @@
       db.bailleur = v;
       save();
     });
-  actions.export = () => {
-    const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
-    download(`gestion-locative-${today()}.json`, blob);
+  actions.export = async () => {
+    const env = await Coffre.chiffrer(cle, db);
+    download(`gestion-locative-${today()}.json`, new Blob([JSON.stringify(env)], { type: 'application/json' }));
   };
   actions.import = (_, input) => {
     const f = input.files[0];
@@ -1116,11 +1137,29 @@
     f.text().then((txt) => {
       try {
         const d = JSON.parse(txt);
-        if (!Array.isArray(d.biens)) throw new Error('fichier non reconnu');
-        if (!confirm('Remplacer toutes les données actuelles par celles du fichier ?')) return;
-        db = { ...empty(), ...d };
-        save();
-        render();
+        const remplacer = (donnees) => {
+          if (!Array.isArray(donnees.biens)) throw new Error('fichier non reconnu');
+          if (!confirm('Remplacer toutes les données actuelles par celles du fichier ?')) return;
+          db = { ...empty(), ...donnees };
+          save();
+          render();
+        };
+        if (!Coffre.estEnveloppe(d)) return remplacer(d);
+        openForm(
+          'Sauvegarde chiffrée',
+          [{ name: 'mdp', label: 'Mot de passe en vigueur lors de cette sauvegarde', type: 'password', required: true, full: true }],
+          {},
+          (v) => {
+            Coffre.ouvrir(v.mdp, d)
+              .then((o) => {
+                modal.close();
+                remplacer(o.donnees);
+              })
+              .catch((e) => alert(e.message));
+            return false;
+          },
+          'Ouvrir'
+        );
       } catch (e) {
         alert('Import impossible : ' + e.message);
       }
@@ -1175,6 +1214,32 @@
     render();
   };
 
+  actions.changerMdp = () =>
+    openForm(
+      'Changer le mot de passe',
+      [
+        { name: 'ancien', label: 'Mot de passe actuel', type: 'password', required: true, full: true },
+        { name: 'nouveau', label: 'Nouveau mot de passe (8 caractères minimum)', type: 'password', required: true, full: true },
+        { name: 'confirmation', label: 'Confirmer le nouveau mot de passe', type: 'password', required: true, full: true },
+      ],
+      {},
+      (v) => {
+        if (v.nouveau.length < 8) return alert('Le mot de passe doit contenir au moins 8 caractères.'), false;
+        if (v.nouveau !== v.confirmation) return alert('Les deux mots de passe ne correspondent pas.'), false;
+        Coffre.ouvrir(v.ancien, JSON.parse(lireLocal(VAULT_KEY)))
+          .then(() => Coffre.deriverCle(v.nouveau))
+          .then((c) => {
+            cle = c;
+            save();
+            modal.close();
+            alert('Mot de passe modifié. Pensez à refaire une sauvegarde : les anciennes demandent l\'ancien mot de passe.');
+          })
+          .catch((e) => alert(e.message));
+        return false;
+      },
+      'Modifier'
+    );
+
   function download(name, blob) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -1219,5 +1284,81 @@
     return d;
   }
 
-  render();
+  // ---------- Verrouillage ----------
+  function verrouiller() {
+    enregistrements.then(() => location.reload());
+  }
+  document.getElementById('verrou').onclick = verrouiller;
+  let minuteur;
+  function activite() {
+    clearTimeout(minuteur);
+    if (cle) minuteur = setTimeout(verrouiller, VERROU_MINUTES * 60000);
+  }
+  for (const ev of ['mousemove', 'keydown', 'click', 'touchstart', 'scroll']) window.addEventListener(ev, activite, { passive: true });
+
+  function ecranVerrou(message) {
+    document.body.classList.add('locked');
+    const env = lireLocal(VAULT_KEY);
+    const anciennes = !env && lireLocal(STORE_KEY);
+    const creation = !env;
+    el.innerHTML = `<div class="card verrou">
+      <h1>🔒 ${creation ? 'Choisissez un mot de passe' : 'Gestion locative verrouillée'}</h1>
+      ${creation ? `<p class="small muted">Il protège vos données : elles sont chiffrées dans ce navigateur et illisibles sans lui.
+        ${anciennes ? '<b>Vos données existantes vont être chiffrées.</b>' : ''}<br><b>Il ne peut pas être récupéré en cas d'oubli</b> — notez-le en lieu sûr.</p>` : ''}
+      <form id="verrou-form" class="form-grid" autocomplete="on">
+        <input type="text" name="username" value="gestion-locative" autocomplete="username" hidden>
+        <label class="full">Mot de passe<input type="password" name="mdp" required autofocus autocomplete="${creation ? 'new-password' : 'current-password'}" ${creation ? 'minlength="8"' : ''}></label>
+        ${creation ? '<label class="full">Confirmer le mot de passe<input type="password" name="confirmation" required autocomplete="new-password"></label>' : ''}
+        <div class="full"><button type="submit">${creation ? 'Créer et ouvrir' : 'Déverrouiller'}</button></div>
+        <p class="full small neg" id="verrou-msg">${h(message || '')}</p>
+      </form>
+      ${creation ? '' : '<p class="small muted">Mot de passe oublié ? Seule une sauvegarde accompagnée de son mot de passe permet de retrouver les données. <button class="link danger" id="verrou-reset">Tout effacer et recommencer</button></p>'}
+    </div>`;
+    const form = document.getElementById('verrou-form');
+    form.mdp.focus();
+    const reset = document.getElementById('verrou-reset');
+    if (reset) {
+      reset.onclick = () => {
+        if (!confirm('Effacer définitivement toutes les données chiffrées de ce navigateur ?')) return;
+        localStorage.removeItem(VAULT_KEY);
+        ecranVerrou();
+      };
+    }
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('verrou-msg');
+      const bouton = form.querySelector('button');
+      bouton.disabled = true;
+      msg.textContent = '';
+      try {
+        if (creation) {
+          if (form.mdp.value !== form.confirmation.value) throw new Error('Les deux mots de passe ne correspondent pas.');
+          cle = await Coffre.deriverCle(form.mdp.value);
+          try {
+            if (anciennes) db = { ...empty(), ...JSON.parse(anciennes) };
+          } catch (_) {
+            /* données illisibles : on repart de zéro */
+          }
+          save();
+        } else {
+          const o = await Coffre.ouvrir(form.mdp.value, JSON.parse(env));
+          cle = o.cle;
+          db = { ...empty(), ...o.donnees };
+        }
+        document.body.classList.remove('locked');
+        activite();
+        render();
+      } catch (err) {
+        msg.textContent = err.message;
+        bouton.disabled = false;
+        form.mdp.select();
+      }
+    };
+  }
+
+  if (!window.crypto || !crypto.subtle) {
+    el.innerHTML = '<div class="card">Ce navigateur ne permet pas le chiffrement des données : ouvrez l\'outil via son adresse https (GitHub Pages) ou http://localhost.</div>';
+  } else {
+    ecranVerrou();
+  }
 })();
