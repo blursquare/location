@@ -206,6 +206,7 @@
   const CATEGORIES = {
     copro: { label: 'Charges de copropriété', deductible: true },
     copro_travaux: { label: 'Travaux votés en AG / fonds travaux', deductible: true },
+    charges_directes: { label: 'Charges payées en direct (eau, entretien, hors copro)', deductible: true },
     taxe_fonciere: { label: 'Taxe foncière', deductible: true },
     assurance_pno: { label: 'Assurance PNO', deductible: true },
     gestion: { label: 'Frais de gestion / agence', deductible: true },
@@ -218,8 +219,9 @@
    * Synthèse annuelle d'un bien (ou de tous si bienId null).
    * Retourne loyers, charges, prêts, cash-flow et estimation des revenus fonciers (régime réel).
    */
-  function syntheseAnnee(data, annee, bienId) {
-    const biens = data.biens.filter((b) => !bienId || b.id === bienId);
+  function syntheseAnnee(data, annee, filtre) {
+    const garde = filtre ? new Set([].concat(filtre)) : null;
+    const biens = data.biens.filter((b) => !garde || garde.has(b.id));
     const ids = new Set(biens.map((b) => b.id));
     const baux = data.baux.filter((b) => ids.has(b.bienId));
     const bailIds = new Set(baux.map((b) => b.id));
@@ -253,7 +255,13 @@
     // Part encaissée imputée en priorité au loyer, le reste aux provisions.
     const totalDu = loyersDus + provisionsDues;
     const loyersEncaisses = totalDu > 0 ? Math.min(encaisse, loyersDus) : encaisse;
-    const forfaitGestion = 20 * baux.filter((b) => joursOccupes(b, annee) > 0).length;
+    // Forfait de 20 € par local : déclaration 2044 (détention en nom propre) uniquement, pas en SCI (2072).
+    const enNomPropre = (bienId) => {
+      const bien = data.biens.find((x) => x.id === bienId) || {};
+      const p = (data.proprietaires || []).find((x) => x.id === bien.proprietaireId);
+      return !p || !/^sci/.test(p.type);
+    };
+    const forfaitGestion = 20 * baux.filter((b) => joursOccupes(b, annee) > 0 && enNomPropre(b.bienId)).length;
     const revenusBruts = loyersEncaisses;
     const deductions = chargesDeductibles + pret.interets + pret.assurance + forfaitGestion;
 
@@ -380,7 +388,52 @@
     return res;
   }
 
+  // ---------- Structure : propriétaires (SCI…), gestionnaires ----------
+  const TYPES_PROPRIETAIRE = {
+    sci_ir: { label: "SCI à l'impôt sur le revenu", declaration: '2072 (puis 2044 de chaque associé)' },
+    sci_is: { label: "SCI à l'impôt sur les sociétés", declaration: '2065 (comptabilité commerciale)' },
+    perso: { label: 'En nom propre', declaration: '2044' },
+    indivision: { label: 'Indivision', declaration: '2044 (quote-part de chaque indivisaire)' },
+  };
+
+  /** Complète les données d'une version antérieure (propriétaires, gestionnaires, copropriété). */
+  function migrer(data) {
+    const d = { ...data };
+    d.proprietaires = Array.isArray(d.proprietaires) ? d.proprietaires : [];
+    d.gestionnaires = Array.isArray(d.gestionnaires) ? d.gestionnaires : [];
+    d.biens = (d.biens || []).map((b) => ({
+      ...b,
+      enCopropriete: b.enCopropriete === undefined ? true : b.enCopropriete,
+      gestionMode: b.gestionMode || 'direct',
+    }));
+    if (!d.proprietaires.length && d.bailleur && d.bailleur.nom && d.biens.length) {
+      d.proprietaires.push({ id: 'proprio-1', nom: d.bailleur.nom, adresse: d.bailleur.adresse || '', type: 'perso' });
+      d.biens = d.biens.map((b) => ({ ...b, proprietaireId: b.proprietaireId || 'proprio-1' }));
+    }
+    return d;
+  }
+
+  /**
+   * Associés et quotes-parts, saisis une ligne par associé : « Marie Dupont : 50 » ou « Paul 500 parts ».
+   * Les nombres sont normalisés en pourcentages.
+   */
+  function associes(texte) {
+    const lignes = String(texte || '')
+      .split(/\r?\n|;/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => {
+        const m = l.match(/^(.*?)[\s:=-]+(\d+(?:[.,]\d+)?)\s*(?:%|parts?)?$/i);
+        return m ? { nom: m[1].trim(), poids: Number(m[2].replace(',', '.')) } : { nom: l, poids: 0 };
+      });
+    const total = lignes.reduce((s, a) => s + a.poids, 0);
+    return lignes.map((a) => ({ nom: a.nom, pct: total ? round2((a.poids / total) * 100) : 0 }));
+  }
+
   const api = {
+    TYPES_PROPRIETAIRE,
+    migrer,
+    associes,
     fusionnerOperations,
     round2,
     parseDate,

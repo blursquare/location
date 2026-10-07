@@ -88,3 +88,31 @@ test('opérations générées depuis un document vérifié', () => {
   assert.equal(g.paiements[0].montant, 870);
   assert.deepEqual(g.charges.map((c) => c.categorie), ['gestion']);
 });
+
+const CRG_MULTI = `AGENCE IMMO GESTION — Compte rendu de gérance
+Mandant : SCI LES CANUTS
+Relevé de gérance d'octobre 2026
+Lot 14 — 12 rue d'Austerlitz — Locataire : Marie MARTIN
+Loyer principal                                 780,00
+Provision sur charges                            90,00
+Honoraires TTC                                   65,52
+Lot 7 — 45 rue Garibaldi — Locataire : Lucas BERNARD
+Loyer principal                                 560,00
+Provision sur charges                            45,00
+Honoraires TTC                                   45,50
+TOTAL NET À VOUS VERSER                       1 274,98
+Virement effectué le 08/11/2026`;
+
+test('relevé de gérance multi-biens', () => {
+  const r = X.extraireGeranceMulti(CRG_MULTI, [
+    { id: 'x', motifs: ["rue d'austerlitz", 'martin'] },
+    { id: 'y', motifs: ['rue garibaldi', 'bernard'] },
+    { id: 'z', motifs: ['chemin des vignes'] },
+  ]);
+  assert.equal(r.length, 2);
+  assert.deepEqual(r.map((l) => [l.bienId, l.loyer, l.provisions, l.honoraires, l.periode, l.date]), [
+    ['x', 780, 90, 65.52, '2026-10', '2026-11-08'],
+    ['y', 560, 45, 45.5, '2026-10', '2026-11-08'],
+  ]);
+  assert.deepEqual(X.extraireGeranceMulti(CRG_MULTI, [{ id: 'x', motifs: ['martin'] }]), []);
+});

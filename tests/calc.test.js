@@ -124,3 +124,35 @@ test("fusion d'opérations importées sans doublon", () => {
   assert.equal(r.data.paiements[1].bailId, 'a');
   assert.equal(data.charges.length, 1); // données d'origine intactes
 });
+
+test('migration vers propriétaires et gestionnaires', () => {
+  const d = C.migrer({ bailleur: { nom: 'Jean', adresse: 'Lyon' }, biens: [{ id: 'x' }, { id: 'y', enCopropriete: false, gestionMode: 'agence' }], baux: [] });
+  assert.equal(d.proprietaires.length, 1);
+  assert.equal(d.biens[0].proprietaireId, 'proprio-1');
+  assert.equal(d.biens[0].enCopropriete, true);
+  assert.equal(d.biens[0].gestionMode, 'direct');
+  assert.equal(d.biens[1].enCopropriete, false);
+  assert.equal(d.biens[1].gestionMode, 'agence');
+  assert.deepEqual(C.migrer(d).proprietaires, d.proprietaires); // idempotent
+});
+
+test('associés et quotes-parts', () => {
+  assert.deepEqual(C.associes('Marie Dupont : 50\nPaul Dupont 50 %'), [{ nom: 'Marie Dupont', pct: 50 }, { nom: 'Paul Dupont', pct: 50 }]);
+  assert.deepEqual(C.associes('A 300 parts; B 100 parts').map((a) => a.pct), [75, 25]);
+});
+
+test('synthèse filtrée par plusieurs biens, forfait 20 € hors SCI', () => {
+  const data = {
+    proprietaires: [{ id: 's', type: 'sci_ir' }, { id: 'p', type: 'perso' }],
+    biens: [{ id: 'x', proprietaireId: 's' }, { id: 'y', proprietaireId: 'p' }, { id: 'z', proprietaireId: 'p' }],
+    baux: [
+      { id: 'a', bienId: 'x', dateDebut: '2025-01-01', loyerHC: 500 },
+      { id: 'b', bienId: 'y', dateDebut: '2025-01-01', loyerHC: 400 },
+      { id: 'c', bienId: 'z', dateDebut: '2025-01-01', loyerHC: 300 },
+    ],
+    paiements: [], charges: [], prets: [],
+  };
+  assert.equal(C.syntheseAnnee(data, 2025, ['x', 'y']).loyersDus, 10800);
+  assert.equal(C.syntheseAnnee(data, 2025, 'x').forfaitGestion, 0);
+  assert.equal(C.syntheseAnnee(data, 2025, null).forfaitGestion, 40);
+});
