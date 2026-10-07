@@ -144,11 +144,14 @@
     return out;
   }
 
+  /** Encaissement de loyer (par opposition à une régularisation de charges ou un remboursement de TEOM). */
+  const estLoyer = (p) => !p.nature || p.nature === 'loyer';
+
   /** Échéances d'un bail avec montant encaissé et reste dû par période. */
   function situationBail(bail, paiements, fromPeriod, toPeriod) {
     const parPeriode = {};
     for (const p of paiements) {
-      if (p.bailId !== bail.id) continue;
+      if (p.bailId !== bail.id || !estLoyer(p)) continue;
       parPeriode[p.periode] = (parPeriode[p.periode] || 0) + (Number(p.montant) || 0);
     }
     return echeancesBail(bail, fromPeriod, toPeriod).map((e) => {
@@ -177,22 +180,58 @@
     return daysBetween(s, e) + 1;
   }
 
+  const dateFr = (iso) => (iso ? iso.split('-').reverse().join('/') : '');
+  const joursAnnee = (a) => ((a % 4 === 0 && a % 100 !== 0) || a % 400 === 0 ? 366 : 365);
+
+  /** Jours d'occupation d'un bail entre deux dates (incluses). */
+  function joursOccupesEntre(bail, debutISO, finISO) {
+    const debut = parseDate(bail.dateDebut);
+    if (!debut) return 0;
+    const fin = bail.dateFin ? parseDate(bail.dateFin) : null;
+    const pS = parseDate(debutISO);
+    const pE = parseDate(finISO);
+    const s = debut > pS ? debut : pS;
+    const e = fin && fin < pE ? fin : pE;
+    return e < s ? 0 : daysBetween(s, e) + 1;
+  }
+
   /**
-   * Régularisation annuelle des charges récupérables pour un bail.
-   * Charges récupérables du bien sur l'année, proratisées à la durée d'occupation,
-   * comparées aux provisions appelées (échéances) sur l'année.
-   * Résultat positif = complément à demander au locataire ; négatif = trop-perçu à rembourser.
+   * Régularisation des charges récupérables d'un bail pour un exercice.
+   * - Si un décompte annuel du syndic couvre l'exercice (exercice se terminant dans l'année),
+   *   on retient ses charges récupérables réelles, proratisées à l'occupation sur l'exercice.
+   * - Sinon (pas encore de décompte, ou bien hors copropriété) : somme des parts récupérables
+   *   des charges saisies sur l'année civile (appels de fonds, charges payées en direct),
+   *   hors taxe foncière (la TEOM est régularisée à part).
+   * Résultat positif = complément à demander au locataire ; négatif = trop-perçu à lui rembourser.
    */
-  function regularisation(bail, charges, annee) {
-    const joursAn = (annee % 4 === 0 && annee % 100 !== 0) || annee % 400 === 0 ? 366 : 365;
-    const jours = joursOccupes(bail, annee);
-    const prorata = jours / joursAn;
-    const recupBien = charges
-      .filter((c) => c.bienId === bail.bienId && (c.date || '').startsWith(String(annee)))
-      .reduce((s, c) => s + (Number(c.partRecuperable) || 0), 0);
+  function regularisation(bail, charges, annee, decomptes) {
+    const decompte = (decomptes || []).find((d) => d.bienId === bail.bienId && String(d.exerciceFin || '').startsWith(String(annee)));
+    let debut = `${annee}-01-01`;
+    let fin = `${annee}-12-31`;
+    let recupBien;
+    let lignes;
+    if (decompte) {
+      debut = decompte.exerciceDebut || debut;
+      fin = decompte.exerciceFin;
+      recupBien = Number(decompte.chargesRecuperables) || 0;
+      lignes = [{ date: decompte.dateApprobation || fin, libelle: `Charges récupérables selon le décompte du syndic (exercice du ${dateFr(debut)} au ${dateFr(fin)})`, montant: round2(recupBien) }];
+    } else {
+      const retenues = charges.filter(
+        (c) => c.bienId === bail.bienId && (c.date || '').startsWith(String(annee)) && c.categorie !== 'taxe_fonciere' && Number(c.partRecuperable)
+      );
+      recupBien = retenues.reduce((s, c) => s + (Number(c.partRecuperable) || 0), 0);
+      lignes = retenues.map((c) => ({ date: c.date, libelle: c.libelle, montant: round2(Number(c.partRecuperable) || 0) }));
+    }
+    const joursExercice = daysBetween(parseDate(debut), parseDate(fin)) + 1;
+    const jours = joursOccupesEntre(bail, debut, fin);
+    const prorata = joursExercice > 0 ? jours / joursExercice : 0;
     const recup = recupBien * prorata;
-    const provisions = echeancesBail(bail, `${annee}-01`, `${annee}-12`).reduce((s, e) => s + e.provision, 0);
+    const provisions = echeancesBail(bail, debut.slice(0, 7), fin.slice(0, 7)).reduce((s, e) => s + e.provision, 0);
     return {
+      source: decompte ? 'decompte' : 'charges',
+      debut,
+      fin,
+      lignes,
       jours,
       prorata,
       chargesRecuperablesBien: round2(recupBien),
@@ -200,6 +239,35 @@
       provisions: round2(provisions),
       solde: round2(recup - provisions),
     };
+  }
+
+  /**
+   * Taxe d'enlèvement des ordures ménagères (TEOM) remboursable par le locataire pour une année civile :
+   * TEOM de l'avis de taxe foncière (part « récupérable » saisie sur la taxe foncière, hors frais de gestion),
+   * proratisée aux jours d'occupation de l'année.
+   */
+  function teom(bail, charges, annee) {
+    const avis = charges.filter((c) => c.bienId === bail.bienId && c.categorie === 'taxe_fonciere' && (c.date || '').startsWith(String(annee)));
+    const teomBien = avis.reduce((s, c) => s + (Number(c.partRecuperable) || 0), 0);
+    const jours = joursOccupes(bail, annee);
+    const prorata = jours / joursAnnee(annee);
+    return { avisSaisi: avis.length > 0, teomBien: round2(teomBien), jours, prorata, montant: round2(teomBien * prorata) };
+  }
+
+  /** Régularisation complète d'un bail : charges + TEOM, et sommes déjà réglées pour cette année. */
+  function regularisationComplete(data, bail, annee) {
+    const charges = regularisation(bail, data.charges, annee, data.decomptes);
+    const t = teom(bail, data.charges, annee);
+    const regle = (nature) =>
+      round2(
+        data.paiements
+          .filter((p) => p.bailId === bail.id && p.nature === nature && Number(p.regulAnnee) === Number(annee))
+          .reduce((s, p) => s + (Number(p.montant) || 0), 0)
+      );
+    const dejaCharges = regle('regularisation');
+    const dejaTeom = regle('teom');
+    const total = round2(charges.solde + t.montant);
+    return { charges, teom: t, total, dejaCharges, dejaTeom, reste: round2(total - dejaCharges - dejaTeom) };
   }
 
   // ---------- Synthèse ----------
@@ -235,9 +303,9 @@
         provisionsDues += e.provision;
       }
     }
-    const encaisse = data.paiements
-      .filter((p) => bailIds.has(p.bailId) && (p.periode || '').startsWith(y))
-      .reduce((s, p) => s + (Number(p.montant) || 0), 0);
+    const paiementsAn = data.paiements.filter((p) => bailIds.has(p.bailId) && (p.periode || '').startsWith(y));
+    const encaisse = paiementsAn.reduce((s, p) => s + (Number(p.montant) || 0), 0);
+    const encaisseLoyers = paiementsAn.filter(estLoyer).reduce((s, p) => s + (Number(p.montant) || 0), 0);
 
     const charges = data.charges.filter((c) => ids.has(c.bienId) && (c.date || '').startsWith(y));
     const chargesTotal = charges.reduce((s, c) => s + (Number(c.montant) || 0), 0);
@@ -254,7 +322,7 @@
 
     // Part encaissée imputée en priorité au loyer, le reste aux provisions.
     const totalDu = loyersDus + provisionsDues;
-    const loyersEncaisses = totalDu > 0 ? Math.min(encaisse, loyersDus) : encaisse;
+    const loyersEncaisses = totalDu > 0 ? Math.min(encaisseLoyers, loyersDus) : encaisseLoyers;
     // Forfait de 20 € par local : déclaration 2044 (détention en nom propre) uniquement, pas en SCI (2072).
     const enNomPropre = (bienId) => {
       const bien = data.biens.find((x) => x.id === bienId) || {};
@@ -270,7 +338,7 @@
       provisionsDues,
       totalDu,
       encaisse,
-      impayes: totalDu - encaisse,
+      impayes: totalDu - encaisseLoyers,
       chargesTotal,
       chargesRecup,
       chargesDeductibles,
@@ -382,6 +450,7 @@
         mode: p.mode || 'Virement',
         note: p.note || '',
         source: p.source || '',
+        ...(p.nature ? { nature: p.nature, regulAnnee: p.regulAnnee } : {}),
       });
       res.ajouts.paiements++;
     });
@@ -401,6 +470,7 @@
     const d = { ...data };
     d.proprietaires = Array.isArray(d.proprietaires) ? d.proprietaires : [];
     d.gestionnaires = Array.isArray(d.gestionnaires) ? d.gestionnaires : [];
+    d.decomptes = Array.isArray(d.decomptes) ? d.decomptes : [];
     d.biens = (d.biens || []).map((b) => ({
       ...b,
       enCopropriete: b.enCopropriete === undefined ? true : b.enCopropriete,
@@ -449,6 +519,10 @@
     revisionIRL,
     joursOccupes,
     regularisation,
+    teom,
+    regularisationComplete,
+    joursOccupesEntre,
+    estLoyer,
     syntheseAnnee,
     CATEGORIES,
   };

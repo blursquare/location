@@ -17,6 +17,7 @@
     baux: [],
     paiements: [],
     charges: [],
+    decomptes: [],
     prets: [],
   });
 
@@ -352,7 +353,7 @@
     }
     const prev = annee - 1;
     if (db.baux.some((b) => C.joursOccupes(b, prev) > 0) && db.charges.some((c) => (c.date || '').startsWith(String(prev)))) {
-      out.push(`Pensez à la <a href="#charges">régularisation des charges ${prev}</a> une fois les comptes approuvés en AG.`);
+      out.push(`Pensez à la <a href="#regularisation">régularisation des charges et de la TEOM ${prev}</a> une fois les comptes approuvés en AG (sélectionnez l'année ${prev}).`);
     }
     return out;
   }
@@ -567,7 +568,8 @@
       .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
       .map((p) => {
         const b = bailById(p.bailId) || {};
-        return `<tr><td>${dateFr(p.date)}</td><td>${h(b.locataire || '?')}</td><td>${periodeLabel(p.periode)}</td><td>${h(p.mode || '')}</td>
+        const nature = p.nature === 'regularisation' ? `<span class="badge st-part">Régul. charges ${h(p.regulAnnee || '')}</span> ` : p.nature === 'teom' ? `<span class="badge st-part">TEOM ${h(p.regulAnnee || '')}</span> ` : '';
+        return `<tr><td>${dateFr(p.date)}</td><td>${h(b.locataire || '?')}</td><td>${nature}${periodeLabel(p.periode)}</td><td>${h(p.mode || '')}</td>
           <td class="num">${eur(p.montant)}</td><td>${h(p.note || '')}</td>
           <td><button class="link" data-act="editPaiement" data-id="${p.id}">Modifier</button>
           <button class="link danger" data-act="delPaiement" data-id="${p.id}">Supprimer</button></td></tr>`;
@@ -586,7 +588,7 @@
     const e = C.situationBail(b, db.paiements, d.periode, d.periode)[0];
     const pays = db.paiements.filter((p) => p.bailId === b.id && p.periode === d.periode);
     const list = pays.length
-      ? `<ul>${pays.map((p) => `<li>${dateFr(p.date)} — ${eur(p.montant)} (${h(p.mode || '')})</li>`).join('')}</ul>`
+      ? `<ul>${pays.map((p) => `<li>${dateFr(p.date)} — ${eur(p.montant)} (${h(p.mode || '')})${p.nature === 'regularisation' ? ' — régularisation des charges' : p.nature === 'teom' ? ' — TEOM' : ''}</li>`).join('')}</ul>`
       : '<p class="muted">Aucun paiement enregistré.</p>';
     openForm(
       `${b.locataire} — ${periodeLong(d.periode)}`,
@@ -761,7 +763,7 @@
     { name: 'libelle', label: 'Libellé', full: true, required: true, help: 'Ex. : Appel de fonds T1, régularisation exercice N-1, facture plombier…' },
     { name: 'date', label: 'Date', type: 'date', required: true },
     { name: 'montant', label: 'Montant payé (€)', type: 'number', required: true, help: 'Négatif pour un remboursement / régularisation créditrice' },
-    { name: 'partRecuperable', label: 'Dont part récupérable (€)', type: 'number', help: 'Refacturable au locataire (décret 87-713) : eau, ascenseur, entretien parties communes, TEOM…' },
+    { name: 'partRecuperable', label: 'Dont part récupérable (€)', type: 'number', help: 'Refacturable au locataire (décret 87-713) : eau, ascenseur, entretien des parties communes… Pour une taxe foncière : le montant de la TEOM.' },
     { name: 'notes', label: 'Notes', type: 'textarea' },
   ];
   views.charges = () => {
@@ -783,27 +785,13 @@
     });
     const foot = `<tr><td colspan="4">Total ${annee}</td><td class="num">${eur(tot)}</td><td class="num">${eur(rec)}</td><td class="num">${eur(tot - rec)}</td><td></td></tr>`;
 
-    const regs = db.baux
-      .filter((b) => (dans(b.bienId)) && C.joursOccupes(b, annee) > 0)
-      .map((b) => {
-        const r = C.regularisation(b, db.charges, annee);
-        return `<tr><td>${h(b.locataire)}<div class="small muted">${h(bienNom(b.bienId))}</div></td>
-          <td class="num">${r.jours} j</td><td class="num">${eur(r.chargesRecuperables)}</td><td class="num">${eur(r.provisions)}</td>
-          <td class="num">${r.solde > 0 ? `<span class="neg">${eur(r.solde)}</span><div class="small muted">à demander</div>` : `<span class="pos">${eur(-r.solde)}</span><div class="small muted">à rembourser</div>`}</td>
-          <td><button class="link" data-act="decompte" data-id="${b.id}">🖨 Décompte</button>
-          <button class="link" data-act="enregRegul" data-id="${b.id}">Enregistrer</button></td></tr>`;
-      });
-
     const parCat = {};
     for (const c of list) parCat[c.categorie] = (parCat[c.categorie] || 0) + (Number(c.montant) || 0);
     return `<div class="toolbar"><h1 style="margin:0">Charges ${annee}</h1><span class="spacer"></span>${bienFilter()}
         ${db.biens.some((b) => b.enCopropriete) ? '<button class="secondary" data-act="appelsFonds">Générer les appels de fonds…</button>' : ''}<button data-act="editCharge">+ Charge</button></div>
       ${table(['Date', 'Bien', 'Catégorie', 'Libellé', { label: 'Montant', cls: 'num' }, { label: 'Récupérable', cls: 'num' }, { label: 'À ma charge', cls: 'num' }, ''], rows, rows.length ? foot : '')}
       ${Object.keys(parCat).length ? `<div class="cards" style="margin-top:12px">${Object.entries(parCat).map(([k, v]) => `<div class="card kpi"><div class="label">${h(catLabel(k))}</div><div class="value" style="font-size:17px">${eur(v)}</div></div>`).join('')}</div>` : ''}
-      <h2>Régularisation des charges ${annee}</h2>
-      <p class="small muted">Charges récupérables de l'année (proratisées à la durée d'occupation) comparées aux provisions appelées.
-        À faire une fois les comptes de l'exercice approuvés en assemblée générale : saisissez la part récupérable réelle figurant sur le décompte du syndic.</p>
-      ${table(['Locataire', { label: 'Occupation', cls: 'num' }, { label: 'Charges récup.', cls: 'num' }, { label: 'Provisions', cls: 'num' }, { label: 'Solde', cls: 'num' }, ''], regs)}`;
+      <p class="small muted" style="margin-top:12px">La régularisation des charges et le remboursement de la TEOM se font dans l'onglet <a href="#regularisation">Régularisation</a>.</p>`;
   };
   actions.editCharge = (d) => {
     const bienId = bienDefaut();
@@ -851,37 +839,163 @@
       'Générer'
     );
   };
+  // ---------- Régularisation des charges et TEOM ----------
+  const champsDecompte = () => [
+    { type: 'html', html: '<p class="small muted">Reportez le <b>décompte individuel de charges</b> envoyé par le syndic après l’approbation des comptes en AG : il indique les charges réelles du lot et la part récupérable sur le locataire.</p>' },
+    { name: 'bienId', label: 'Bien en copropriété', type: 'select', options: db.biens.filter((b) => b.enCopropriete).map((b) => [b.id, b.nom]), required: true, full: true },
+    { name: 'exerciceDebut', label: "Début de l'exercice", type: 'date', required: true },
+    { name: 'exerciceFin', label: "Fin de l'exercice", type: 'date', required: true },
+    { name: 'chargesTotales', label: 'Charges réelles du lot (€)', type: 'number' },
+    { name: 'chargesRecuperables', label: 'Dont charges récupérables (€)', type: 'number', required: true },
+    { name: 'dateApprobation', label: 'Date de l’AG / du décompte', type: 'date' },
+    { name: 'notes', label: 'Notes', type: 'textarea' },
+  ];
+  const statutRegul = (r) => {
+    if (Math.abs(r.total) < 0.01) return '<span class="badge st-future">Rien à régulariser</span>';
+    if (Math.abs(r.reste) < 0.01) return '<span class="badge st-ok">Réglée</span>';
+    if (r.dejaCharges || r.dejaTeom) return `<span class="badge st-part">Partielle</span>`;
+    return `<span class="badge st-due">${r.total > 0 ? 'À demander' : 'À rembourser'}</span>`;
+  };
+  const sensMontant = (n) =>
+    n > 0.005 ? `<span class="neg">${eur(n)}</span><div class="small muted">dû par le locataire</div>` : n < -0.005 ? `<span class="pos">${eur(-n)}</span><div class="small muted">à lui rembourser</div>` : eur(0);
+
+  views.regularisation = () => {
+    if (!db.baux.length) return `<h1>Régularisation</h1>${needBien() || `<div class="card empty">Ajoutez d'abord un <a href="#baux">bail</a>.</div>`}`;
+    const baux = db.baux.filter((b) => dans(b.bienId) && C.joursOccupes(b, annee) > 0);
+    let totCharges = 0;
+    let totTeom = 0;
+    let totReste = 0;
+    const rows = baux.map((b) => {
+      const r = C.regularisationComplete(db, b, annee);
+      const bien = bienById(b.bienId) || {};
+      totCharges += r.charges.solde;
+      totTeom += r.teom.montant;
+      totReste += r.reste;
+      const src =
+        r.charges.source === 'decompte'
+          ? '<span class="badge st-ok" title="Charges réelles approuvées">décompte syndic</span>'
+          : bien.enCopropriete
+            ? '<span class="badge st-part" title="Aucun décompte du syndic saisi pour cet exercice : estimation à partir des appels de fonds">estimation (appels)</span>'
+            : '<span class="badge st-future">charges payées en direct</span>';
+      const agence = gestionnaire(bien);
+      return `<tr><td><b>${h(b.locataire)}</b><div class="small muted">${h(bien.nom || '')}${agence ? ` · géré par ${h(agence.nom)}` : ''}</div></td>
+        <td>${src}<div class="small muted">${r.charges.jours} j · récup. ${eur(r.charges.chargesRecuperables)} − prov. ${eur(r.charges.provisions)}</div></td>
+        <td class="num">${sensMontant(r.charges.solde)}</td>
+        <td class="num">${r.teom.avisSaisi ? eur(r.teom.montant) : '<span class="small muted">avis de taxe foncière non saisi</span>'}<div class="small muted">${r.teom.avisSaisi ? `${eur(r.teom.teomBien)} × ${r.teom.jours} j` : ''}</div></td>
+        <td class="num"><b>${sensMontant(r.total)}</b>${r.dejaCharges || r.dejaTeom ? `<div class="small muted">déjà réglé ${eur(r.dejaCharges + r.dejaTeom)}</div>` : ''}</td>
+        <td>${statutRegul(r)}</td>
+        <td><button class="link" data-act="decompte" data-id="${b.id}">🖨 Décompte</button>
+        ${Math.abs(r.reste) >= 0.01 ? `<button class="link" data-act="enregRegul" data-id="${b.id}">Enregistrer le règlement</button>` : ''}</td></tr>`;
+    });
+    const foot = rows.length
+      ? `<tr><td colspan="2">Total ${annee}</td><td class="num">${eur(totCharges)}</td><td class="num">${eur(totTeom)}</td><td class="num">${eur(totCharges + totTeom)}</td><td colspan="2">reste ${eur(totReste)}</td></tr>`
+      : '';
+    const decs = db.decomptes
+      .filter((x) => dans(x.bienId))
+      .sort((a, b) => (b.exerciceFin || '').localeCompare(a.exerciceFin || ''))
+      .map(
+        (x) => `<tr><td>${h(bienNom(x.bienId))}</td><td>${dateFr(x.exerciceDebut)} → ${dateFr(x.exerciceFin)}</td><td class="num">${x.chargesTotales !== '' && x.chargesTotales !== undefined ? eur(x.chargesTotales) : '—'}</td>
+          <td class="num">${eur(x.chargesRecuperables)}</td><td>${dateFr(x.dateApprobation)}</td>
+          <td><button class="link" data-act="editDecompte" data-id="${x.id}">Modifier</button><button class="link danger" data-act="delDecompte" data-id="${x.id}">Supprimer</button></td></tr>`
+      );
+    const sansAvis = baux.filter((b) => !C.teom(b, db.charges, annee).avisSaisi).map((b) => bienNom(b.bienId));
+    return `<div class="toolbar"><h1 style="margin:0">Régularisation ${annee}</h1><span class="spacer"></span>${bienFilter()}
+        ${db.biens.some((b) => b.enCopropriete) ? '<button class="secondary" data-act="editDecompte">+ Décompte du syndic</button>' : ''}
+        <button class="secondary" data-act="avisTF">+ Avis de taxe foncière</button></div>
+      <p class="small muted">Pour chaque locataire : régularisation des <b>charges récupérables</b> (réelles − provisions versées, au prorata de l'occupation) et remboursement de la
+        <b>taxe d'enlèvement des ordures ménagères</b> de l'année (au prorata de l'occupation). Les charges d'un exercice se régularisent une fois les comptes approuvés en AG.</p>
+      ${table(['Locataire', 'Base des charges', { label: 'Solde charges', cls: 'num' }, { label: 'TEOM', cls: 'num' }, { label: 'Total', cls: 'num' }, 'Statut', ''], rows, foot)}
+      ${sansAvis.length ? `<p class="small muted">⚠ Avis de taxe foncière ${annee} non saisi pour : ${[...new Set(sansAvis)].map(h).join(', ')}. Saisissez-le avec le montant de la TEOM qui y figure.</p>` : ''}
+      <h2>Décomptes annuels du syndic</h2>
+      ${table(['Bien', 'Exercice', { label: 'Charges du lot', cls: 'num' }, { label: 'Récupérables', cls: 'num' }, 'AG / décompte', ''], decs)}
+      <p class="small muted">Un décompte est utilisé pour la régularisation de l'année où se termine son exercice. Sans décompte, l'outil estime à partir des parts récupérables des appels de fonds.</p>`;
+  };
+
+  actions.editDecompte = (d) => {
+    const x = d.id ? db.decomptes.find((y) => y.id === d.id) : { bienId: (db.biens.find((b) => b.enCopropriete && dans(b.id)) || {}).id, exerciceDebut: `${annee}-01-01`, exerciceFin: `${annee}-12-31` };
+    openForm(d.id ? 'Modifier le décompte du syndic' : 'Décompte annuel du syndic', champsDecompte(), x, (v) => {
+      if (v.exerciceFin < v.exerciceDebut) return alert("La fin de l'exercice précède son début."), false;
+      upsert('decomptes', v);
+    });
+  };
+  actions.delDecompte = (d) => {
+    if (confirm('Supprimer ce décompte ?')) {
+      remove('decomptes', d.id);
+      render();
+    }
+  };
+  actions.avisTF = () => {
+    openForm(
+      'Avis de taxe foncière',
+      [
+        { type: 'html', html: "<p class=\"small muted\">Saisissez le montant total de l'avis et la ligne « taxe d'enlèvement des ordures ménagères ». Seule la TEOM (hors frais de gestion de l'État) est récupérable sur le locataire.</p>" },
+        { name: 'bienId', label: 'Bien', type: 'select', options: bienOptions(), required: true, full: true },
+        { name: 'date', label: "Date de l'avis / échéance", type: 'date', required: true },
+        { name: 'montant', label: "Montant total de l'avis (€)", type: 'number', required: true },
+        { name: 'partRecuperable', label: 'Dont TEOM (€)', type: 'number', required: true },
+      ],
+      { bienId: bienDefaut(), date: `${annee}-10-15` },
+      (v) => {
+        const an = v.date.slice(0, 4);
+        const existe = db.charges.find((c) => c.bienId === v.bienId && c.categorie === 'taxe_fonciere' && (c.date || '').startsWith(an));
+        if (existe && !confirm(`Un avis de taxe foncière ${an} existe déjà pour ce bien (${eur(existe.montant)}). Le remplacer ?`)) return false;
+        upsert('charges', { ...(existe || {}), bienId: v.bienId, categorie: 'taxe_fonciere', libelle: `Taxe foncière ${an}`, date: v.date, montant: v.montant, partRecuperable: v.partRecuperable });
+      }
+    );
+  };
   actions.decompte = (d) => {
     const b = bailById(d.id);
     const bien = bienById(b.bienId) || {};
-    const r = C.regularisation(b, db.charges, annee);
-    const lignes = db.charges
-      .filter((c) => c.bienId === b.bienId && (c.date || '').startsWith(String(annee)) && Number(c.partRecuperable))
-      .map((c) => `<tr><td>${dateFr(c.date)}</td><td>${h(c.libelle)}</td><td class="n">${eur(c.partRecuperable)}</td></tr>`)
-      .join('');
+    const r = C.regularisationComplete(db, b, annee);
+    const c = r.charges;
+    const lignes = c.lignes.map((l) => `<tr><td>${dateFr(l.date)}</td><td>${h(l.libelle)}</td><td class="n">${eur(l.montant)}</td></tr>`).join('');
+    const periodeCharges = c.source === 'decompte' ? `exercice du ${dateFr(c.debut)} au ${dateFr(c.fin)}` : `année ${annee}`;
     printDoc(
-      `Régularisation des charges ${annee} ${b.locataire}`,
-      `${enTete(b, bien)}<h1>Décompte de régularisation des charges<br><small>Année ${annee}</small></h1>
-      <p>Lot : ${h(bien.lot || '—')} — Copropriété : ${h(bien.copropriete || '—')}${bien.tantiemes ? ` — Quote-part : ${h(bien.tantiemes)}/${h(bien.tantiemesTotal)} tantièmes` : ''}</p>
-      <table><tr><td><b>Date</b></td><td><b>Charges récupérables</b></td><td class="n"><b>Montant</b></td></tr>${lignes}
-      <tr class="t"><td></td><td>Total charges récupérables du lot</td><td class="n">${eur(r.chargesRecuperablesBien)}</td></tr></table>
-      <table><tr><td>Période d'occupation (${r.jours} jours)</td><td class="n">${(r.prorata * 100).toFixed(1)} %</td></tr>
-      <tr><td>Charges récupérables à votre charge</td><td class="n">${eur(r.chargesRecuperables)}</td></tr>
-      <tr><td>Provisions versées</td><td class="n">${eur(r.provisions)}</td></tr>
-      <tr class="t"><td>${r.solde >= 0 ? 'Solde restant dû par le locataire' : 'Trop-perçu remboursé au locataire'}</td><td class="n">${eur(Math.abs(r.solde))}</td></tr></table>
-      <p class="small">Conformément à l'article 23 de la loi du 6 juillet 1989, les pièces justificatives sont tenues à votre disposition pendant six mois à compter de l'envoi de ce décompte.</p>
+      `Régularisation ${annee} ${b.locataire}`,
+      `${enTete(b, bien)}<h1>Régularisation des charges locatives<br><small>${h(periodeCharges)}${r.teom.avisSaisi ? ` — TEOM ${annee}` : ''}</small></h1>
+      ${bien.enCopropriete ? `<p>Lot : ${h(bien.lot || '—')} — Copropriété : ${h(bien.copropriete || '—')}${bien.tantiemes ? ` — Quote-part : ${h(bien.tantiemes)}/${h(bien.tantiemesTotal)} tantièmes` : ''}</p>` : ''}
+      <h3>1. Charges récupérables</h3>
+      <table><tr><td><b>Date</b></td><td><b>Détail</b></td><td class="n"><b>Montant</b></td></tr>${lignes || '<tr><td colspan="3">Aucune charge récupérable</td></tr>'}
+      <tr class="t"><td></td><td>Total des charges récupérables du logement</td><td class="n">${eur(c.chargesRecuperablesBien)}</td></tr></table>
+      <table><tr><td>Votre occupation sur la période (${c.jours} jours)</td><td class="n">${(c.prorata * 100).toFixed(1)} %</td></tr>
+      <tr><td>Charges récupérables à votre charge</td><td class="n">${eur(c.chargesRecuperables)}</td></tr>
+      <tr><td>Provisions pour charges appelées sur la période</td><td class="n">- ${eur(c.provisions)}</td></tr>
+      <tr class="t"><td>${c.solde >= 0 ? 'Complément de charges dû' : 'Trop-perçu de provisions en votre faveur'}</td><td class="n">${eur(Math.abs(c.solde))}</td></tr></table>
+      ${r.teom.avisSaisi ? `<h3>2. Taxe d'enlèvement des ordures ménagères ${annee}</h3>
+      <table><tr><td>TEOM figurant sur l'avis de taxe foncière ${annee}</td><td class="n">${eur(r.teom.teomBien)}</td></tr>
+      <tr><td>Votre occupation en ${annee} (${r.teom.jours} jours)</td><td class="n">${(r.teom.prorata * 100).toFixed(1)} %</td></tr>
+      <tr class="t"><td>TEOM à votre charge</td><td class="n">${eur(r.teom.montant)}</td></tr></table>` : ''}
+      <table>${r.teom.avisSaisi ? `<tr><td>Régularisation des charges</td><td class="n">${eur(c.solde)}</td></tr><tr><td>TEOM</td><td class="n">${eur(r.teom.montant)}</td></tr>` : ''}
+      ${r.dejaCharges || r.dejaTeom ? `<tr><td>Déjà réglé</td><td class="n">- ${eur(r.dejaCharges + r.dejaTeom)}</td></tr>` : ''}
+      <tr class="t"><td>${r.reste >= 0 ? 'Montant total à régler' : 'Montant total qui vous sera remboursé'}</td><td class="n">${eur(Math.abs(r.reste))}</td></tr></table>
+      <p class="small">Conformément à l'article 23 de la loi du 6 juillet 1989, le décompte par nature de charges et les pièces justificatives (décompte du syndic, avis de taxe foncière, factures)
+      sont tenus à votre disposition pendant six mois à compter de l'envoi du présent décompte. Les frais de gestion de la fiscalité directe locale ne sont pas récupérables.</p>
       <p>Fait le ${dateFr(today())}</p>`
     );
   };
   actions.enregRegul = (d) => {
     const b = bailById(d.id);
-    const r = C.regularisation(b, db.charges, annee);
-    const periode = currentPeriod();
-    if (!confirm(`Enregistrer la régularisation ${annee} de ${b.locataire} (${r.solde >= 0 ? 'complément de ' : 'remboursement de '}${eur(Math.abs(r.solde))}) comme un paiement sur la période ${periodeLabel(periode)} ?\n\nÀ faire une fois la somme effectivement reçue ou remboursée.`)) return;
-    db.paiements.push({ id: uid(), bailId: b.id, periode, montant: r.solde, date: today(), mode: 'Autre', note: `Régularisation charges ${annee}` });
-    save();
-    alert('Enregistré. Notez que ce montant apparaît en plus du loyer du mois dans la grille des loyers.');
-    render();
+    const r = C.regularisationComplete(db, b, annee);
+    const resteCharges = C.round2(r.charges.solde - r.dejaCharges);
+    const resteTeom = C.round2(r.teom.montant - r.dejaTeom);
+    openForm(
+      `Règlement de la régularisation ${annee} — ${b.locataire}`,
+      [
+        { type: 'html', html: '<p class="small muted">Montants positifs : reçus du locataire. Négatifs : remboursés au locataire (ou déduits d’un loyer). Ils sont suivis à part des loyers.</p>' },
+        { name: 'charges', label: 'Régularisation des charges (€)', type: 'number' },
+        { name: 'teom', label: 'Remboursement de TEOM (€)', type: 'number' },
+        { name: 'date', label: 'Date du règlement', type: 'date', required: true },
+        { name: 'mode', label: 'Mode', type: 'select', options: MODES.map((m) => [m, m]) },
+      ],
+      { charges: resteCharges || '', teom: resteTeom || '', date: today(), mode: 'Virement' },
+      (v) => {
+        const base = { bailId: b.id, periode: v.date.slice(0, 7), date: v.date, mode: v.mode, regulAnnee: annee };
+        if (Number(v.charges)) db.paiements.push({ ...base, id: uid(), nature: 'regularisation', montant: Number(v.charges), note: `Régularisation des charges ${annee}` });
+        if (Number(v.teom)) db.paiements.push({ ...base, id: uid(), nature: 'teom', montant: Number(v.teom), note: `TEOM ${annee}` });
+        save();
+      },
+      'Enregistrer'
+    );
   };
 
   // ---------- Prêts ----------

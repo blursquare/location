@@ -156,3 +156,36 @@ test('synthèse filtrée par plusieurs biens, forfait 20 € hors SCI', () => {
   assert.equal(C.syntheseAnnee(data, 2025, 'x').forfaitGestion, 0);
   assert.equal(C.syntheseAnnee(data, 2025, null).forfaitGestion, 40);
 });
+
+test('régularisation selon le décompte du syndic (exercice décalé)', () => {
+  const bail = { id: 'b', bienId: 'x', dateDebut: '2025-01-01', dateFin: '2026-03-31', loyerHC: 500, provisionCharges: 60 };
+  const decomptes = [{ bienId: 'x', exerciceDebut: '2025-04-01', exerciceFin: '2026-03-31', chargesRecuperables: 900 }];
+  const charges = [{ bienId: 'x', date: '2026-01-01', categorie: 'copro', montant: 400, partRecuperable: 300 }];
+  const r = C.regularisation(bail, charges, 2026, decomptes);
+  assert.equal(r.source, 'decompte');
+  assert.equal(r.jours, 365);
+  assert.equal(r.chargesRecuperables, 900);
+  assert.equal(r.provisions, 720); // 12 mois d'avril 2025 à mars 2026
+  assert.equal(r.solde, 180);
+});
+
+test('TEOM proratisée et exclue de la régularisation des charges', () => {
+  const bail = { id: 'b', bienId: 'x', dateDebut: '2025-07-01', loyerHC: 500, provisionCharges: 20 };
+  const charges = [
+    { bienId: 'x', date: '2025-10-15', categorie: 'taxe_fonciere', montant: 900, partRecuperable: 146 },
+    { bienId: 'x', date: '2025-05-01', categorie: 'charges_directes', montant: 200, partRecuperable: 200 },
+  ];
+  const t = C.teom(bail, charges, 2025);
+  assert.equal(t.jours, 184);
+  assert.equal(t.montant, C.round2((146 * 184) / 365));
+  const r = C.regularisation(bail, charges, 2025, []);
+  assert.equal(r.chargesRecuperablesBien, 200); // TEOM non comptée deux fois
+  const data = { charges, decomptes: [], paiements: [{ bailId: 'b', nature: 'teom', regulAnnee: 2025, montant: 50, periode: '2026-02' }, { bailId: 'b', periode: '2025-08', montant: 520 }] };
+  const c = C.regularisationComplete(data, bail, 2025);
+  assert.equal(c.dejaTeom, 50);
+  assert.equal(c.total, C.round2(r.solde + t.montant));
+  assert.equal(c.reste, C.round2(c.total - 50));
+  // un remboursement de TEOM n'est pas un loyer : il ne solde pas une échéance
+  const s = C.situationBail(bail, [{ bailId: 'b', periode: '2025-08', montant: 520, nature: 'teom' }], '2025-08', '2025-08');
+  assert.equal(s[0].paye, 0);
+});
