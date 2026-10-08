@@ -222,3 +222,31 @@ test('paiements automatiques (virement permanent le 30) et récapitulatif annuel
   assert.deepEqual(r2.nonRegles.map((e) => e.periode), ['2026-10']);
   assert.equal(C.dateEcheance(bail, '2028-02'), '2028-02-29');
 });
+
+test("fusion : doublons d'opérations saisies à la main, bail en cours obligatoire", () => {
+  const data = C.migrer({
+    biens: [{ id: 'b1', nom: 'Appt B01' }],
+    baux: [{ id: 'l1', bienId: 'b1', locataire: 'Dupont', dateDebut: '2026-02-01', loyerHC: 500 }],
+    paiements: [{ id: 'p1', bailId: 'l1', periode: '2026-03', montant: 500, date: '2026-03-05' }],
+    charges: [{ id: 'c1', bienId: 'b1', categorie: 'copro', libelle: 'Appel T3', date: '2026-07-10', montant: 375.76 }],
+  });
+  const r = C.fusionnerOperations(
+    data,
+    {
+      charges: [
+        { bien: 'b1', date: '2026-07-01', categorie: 'copro', libelle: 'Appel de fonds T3 2026', montant: 375.76, source: 'gmail:a:x.pdf' },
+        { bien: 'b1', date: '2026-10-01', categorie: 'copro', libelle: 'Appel de fonds T4 2026', montant: 375.76, source: 'gmail:b:x.pdf' },
+      ],
+      paiements: [
+        { bien: 'b1', periode: '2026-03', montant: 500, source: 'gmail:c:r.pdf' },
+        { bien: 'b1', periode: '2026-04', montant: 500, source: 'gmail:d:r.pdf' },
+        { bien: 'b1', periode: '2025-06', montant: 500, source: 'gmail:e:r.pdf' },
+      ],
+    },
+    () => 'n' + Math.random()
+  );
+  assert.equal(r.ignores, 2); // T3 (à 9 jours près) et mars déjà saisis
+  assert.equal(r.ajouts.charges, 1);
+  assert.equal(r.ajouts.paiements, 1);
+  assert.equal(r.erreurs.length, 1); // juin 2025 : aucun bail en cours
+});

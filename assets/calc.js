@@ -456,6 +456,29 @@
    * `source` : identifiant unique de la pièce d'origine (ex. id du mail) servant à dédoublonner.
    * Retourne { data, ajouts: { charges, paiements }, ignores, erreurs }.
    */
+  const ecartJours = (a, b) => Math.abs((Date.parse(a) - Date.parse(b)) / 86400000);
+  /**
+   * Charge déjà enregistrée (saisie à la main ou importée d'une autre source) : même bien,
+   * même catégorie, même montant, à 20 jours près.
+   */
+  function chargeExistante(data, bienId, c) {
+    const m = Number(c.montant);
+    return (data.charges || []).find(
+      (x) => x.bienId === bienId && (x.categorie || 'copro') === (c.categorie || 'copro') && Math.abs(Number(x.montant) - m) < 0.01 && c.date && x.date && ecartJours(x.date, c.date) <= 20
+    ) || null;
+  }
+  /** Encaissement déjà enregistré : même bail, même mois, même nature, même montant. */
+  function paiementExistant(data, bailId, p) {
+    const nature = p.nature || 'loyer';
+    return (data.paiements || []).find(
+      (x) => x.bailId === bailId && x.periode === p.periode && (x.nature || 'loyer') === nature && Math.abs(Number(x.montant) - Number(p.montant)) < 0.01
+    ) || null;
+  }
+  /** Bail en cours pour un bien au mois donné (null si aucun). */
+  function bailActif(data, bienId, periode) {
+    return (data.baux || []).find((b) => b.bienId === bienId && b.dateDebut && b.dateDebut.slice(0, 7) <= periode && (!b.dateFin || b.dateFin.slice(0, 7) >= periode)) || null;
+  }
+
   function fusionnerOperations(data, imp, newId) {
     const d = JSON.parse(JSON.stringify(data));
     const res = { data: d, ajouts: { charges: 0, paiements: 0 }, ignores: 0, erreurs: [] };
@@ -480,7 +503,8 @@
       const candidats = d.baux.filter((b) => (!n || norm(b.locataire).includes(n) || n.includes(norm(b.locataire))) && (!bien || b.bienId === bien.id));
       const per = op.periode || '';
       const actifs = candidats.filter((b) => (!per || b.dateDebut.slice(0, 7) <= per) && (!b.dateFin || !per || b.dateFin.slice(0, 7) >= per));
-      return actifs[0] || candidats[0] || null;
+      // Un loyer ne s'impute qu'à un bail en cours ce mois-là.
+      return per ? actifs[0] || null : actifs[0] || candidats[0] || null;
     };
     const dejaVu = (src) => {
       if (!src) return false;
@@ -493,7 +517,7 @@
       const bien = trouveBien(c.bien || c.bienId);
       if (!bien) return res.erreurs.push(`Charge n°${i + 1} (${c.libelle || ''}) : bien « ${c.bien || '?'} » introuvable`);
       if (!c.date || !Number.isFinite(Number(c.montant))) return res.erreurs.push(`Charge n°${i + 1} : date ou montant manquant`);
-      if (dejaVu(c.source)) return res.ignores++;
+      if (dejaVu(c.source) || chargeExistante(d, bien.id, c)) return res.ignores++;
       d.charges.push({
         id: newId(),
         bienId: bien.id,
@@ -510,9 +534,9 @@
 
     (imp.paiements || []).forEach((p, i) => {
       const bail = trouveBail(p);
-      if (!bail) return res.erreurs.push(`Paiement n°${i + 1} : bail de « ${p.locataire || p.bail || '?'} » introuvable`);
+      if (!bail) return res.erreurs.push(`Paiement n°${i + 1} (${p.periode || '?'}) : aucun bail en cours pour « ${p.locataire || p.bail || p.bien || '?'} »`);
       if (!/^\d{4}-\d{2}$/.test(p.periode || '') || !Number.isFinite(Number(p.montant))) return res.erreurs.push(`Paiement n°${i + 1} : période (AAAA-MM) ou montant invalide`);
-      if (dejaVu(p.source)) return res.ignores++;
+      if (dejaVu(p.source) || paiementExistant(d, bail.id, p)) return res.ignores++;
       d.paiements.push({
         id: newId(),
         bailId: bail.id,
@@ -574,6 +598,9 @@
   }
 
   const api = {
+    chargeExistante,
+    paiementExistant,
+    bailActif,
     dateEcheance,
     paiementsAutomatiques,
     recapLoyers,
