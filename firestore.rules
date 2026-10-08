@@ -1,0 +1,43 @@
+rules_version = '2';
+
+// Règles de sécurité de la base Firestore de l'outil de gestion locative.
+// À coller dans la console Firebase : Firestore Database → Règles → Publier.
+// Remplacez les UID ci-dessous par ceux des comptes autorisés
+// (Authentication → Users → colonne « UID utilisateur »).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function autorise() {
+      return request.auth != null && request.auth.uid in [
+        'UID_BASTIEN',
+        'UID_SOPHIE',
+        'UID_CLAUDE'
+      ];
+    }
+
+    // Chaque écriture incrémente la version de 1 : deux appareils ne peuvent pas
+    // s'écraser mutuellement sans s'en apercevoir.
+    function contenuValide() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['json', 'version', 'majPar', 'majLe'])
+        && d.json is string && d.json.size() < 900000
+        && d.version is int
+        && d.version == (resource == null ? 1 : resource.data.version + 1);
+    }
+
+    match /gestion/{base} {
+      allow read: if autorise();
+      allow create, update: if autorise() && contenuValide();
+
+      // Historique : une copie par version, jamais modifiée ni supprimée depuis l'outil.
+      match /historique/{version} {
+        allow read: if autorise();
+        allow create: if autorise() && request.resource.data.json is string;
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
