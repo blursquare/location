@@ -10,6 +10,13 @@
   'use strict';
   const SDK = 'https://www.gstatic.com/firebasejs/10.12.2/';
   const NOM_APP = 'gestion-locative';
+  // Projet Firebase de l'outil : seule la clé API (publique) est à saisir dans l'outil.
+  const PROJET = {
+    projectId: 'location-1a379',
+    authDomain: 'location-1a379.firebaseapp.com',
+    appId: '1:740693444167:web:fe84267b5c447f3f875362',
+    messagingSenderId: '740693444167',
+  };
 
   /**
    * Lit la configuration Firebase collée par l'utilisateur : objet JSON, ou extrait de code
@@ -17,7 +24,9 @@
    */
   function lireConfig(texte) {
     if (texte && typeof texte === 'object') return valider(texte);
-    const t = String(texte || '');
+    const t = String(texte || '').trim();
+    // Clé API seule (« AIza… ») : configuration du projet de l'outil.
+    if (/^AIza[\w-]{30,}$/.test(t)) return valider({ ...PROJET, apiKey: t });
     const debut = t.indexOf('{');
     const fin = t.lastIndexOf('}');
     if (debut < 0 || fin < debut) throw new Error('configuration introuvable (attendu : { apiKey: …, projectId: … })');
@@ -39,6 +48,7 @@
     if (!c.apiKey || !c.projectId) throw new Error('la configuration doit contenir apiKey et projectId');
     const r = { apiKey: c.apiKey, projectId: c.projectId, authDomain: c.authDomain || `${c.projectId}.firebaseapp.com` };
     if (c.appId) r.appId = c.appId;
+    if (c.messagingSenderId) r.messagingSenderId = c.messagingSenderId;
     if (c.emulateur) r.emulateur = c.emulateur;
     return r;
   }
@@ -86,20 +96,68 @@
   const surUtilisateur = (cb) => auth.onAuthStateChanged(cb);
   const utilisateur = () => (auth && auth.currentUser) || null;
 
+  const MESSAGES = {
+    'auth/invalid-credential': 'e-mail ou mot de passe incorrect',
+    'auth/invalid-login-credentials': 'e-mail ou mot de passe incorrect',
+    'auth/wrong-password': 'mot de passe incorrect',
+    'auth/user-not-found': 'compte inconnu',
+    'auth/invalid-email': 'adresse e-mail invalide',
+    'auth/missing-email': 'indiquez votre adresse e-mail',
+    'auth/missing-password': 'indiquez un mot de passe',
+    'auth/email-already-in-use': 'un compte existe déjà avec cette adresse : connectez-vous (ou « Mot de passe oublié »)',
+    'auth/weak-password': 'mot de passe trop court (8 caractères au moins)',
+    'auth/too-many-requests': 'trop de tentatives, réessayez plus tard',
+    'auth/network-request-failed': 'pas de connexion internet',
+    'auth/operation-not-allowed': 'la connexion par e-mail n’est pas activée dans Firebase (Authentication → Méthode de connexion → Adresse e-mail/Mot de passe)',
+    'auth/configuration-not-found': 'Firebase Authentication n’est pas encore activé sur ce projet (console Firebase → Authentication → Commencer)',
+    'auth/api-key-not-valid.-please-pass-a-valid-api-key.': 'clé API invalide : vérifiez la configuration',
+  };
+  const traduire = (e) => new Error(MESSAGES[e.code] || e.message);
+
   async function connexion(email, motDePasse) {
     try {
       await auth.signInWithEmailAndPassword(email, motDePasse);
     } catch (e) {
-      const messages = {
-        'auth/invalid-credential': 'e-mail ou mot de passe incorrect',
-        'auth/wrong-password': 'mot de passe incorrect',
-        'auth/user-not-found': 'compte inconnu',
-        'auth/invalid-email': 'adresse e-mail invalide',
-        'auth/too-many-requests': 'trop de tentatives, réessayez plus tard',
-        'auth/network-request-failed': 'pas de connexion internet',
-        'auth/operation-not-allowed': 'la connexion par e-mail n’est pas activée dans Firebase (Authentication → Méthode de connexion)',
-      };
-      throw new Error(messages[e.code] || e.message);
+      throw traduire(e);
+    }
+  }
+
+  /** Crée un compte e-mail / mot de passe et envoie l'e-mail de vérification de l'adresse. */
+  async function creerCompte(email, motDePasse) {
+    if (String(motDePasse || '').length < 8) throw new Error(MESSAGES['auth/weak-password']);
+    try {
+      const r = await auth.createUserWithEmailAndPassword(email, motDePasse);
+      auth.languageCode = 'fr';
+      await r.user.sendEmailVerification();
+    } catch (e) {
+      throw traduire(e);
+    }
+  }
+
+  async function envoyerVerification() {
+    try {
+      auth.languageCode = 'fr';
+      await auth.currentUser.sendEmailVerification();
+    } catch (e) {
+      throw traduire(e);
+    }
+  }
+
+  /** Relit l'état du compte (adresse vérifiée ?) et renouvelle le jeton transmis à Firestore. */
+  async function actualiser() {
+    const u = auth.currentUser;
+    if (!u) return false;
+    await u.reload();
+    if (u.emailVerified) await u.getIdToken(true);
+    return u.emailVerified;
+  }
+
+  async function reinitialiser(email) {
+    try {
+      auth.languageCode = 'fr';
+      await auth.sendPasswordResetEmail(email);
+    } catch (e) {
+      throw traduire(e);
     }
   }
   const deconnexion = () => auth.signOut();
@@ -118,7 +176,7 @@
         if (snap.metadata.hasPendingWrites) return;
         cb(lireDoc(snap));
       },
-      (e) => erreur && erreur(e.code === 'permission-denied' ? new Error('accès refusé : ce compte n’est pas autorisé dans les règles Firestore') : e)
+      (e) => erreur && erreur(e.code === 'permission-denied' ? new Error('accès refusé : cette adresse n’est pas autorisée dans les règles Firestore') : e)
     );
   }
 
@@ -151,7 +209,7 @@
     }
   }
 
-  const api = { lireConfig, init, surUtilisateur, utilisateur, connexion, deconnexion, ecouter, ecrire };
-  if (typeof module !== 'undefined' && module.exports) module.exports = { lireConfig };
+  const api = { PROJET, lireConfig, init, surUtilisateur, utilisateur, connexion, creerCompte, envoyerVerification, actualiser, reinitialiser, deconnexion, ecouter, ecrire };
+  if (typeof module !== 'undefined' && module.exports) module.exports = { lireConfig, PROJET };
   else root.Cloud = api;
 })(typeof window !== 'undefined' ? window : globalThis);

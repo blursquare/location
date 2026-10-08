@@ -1947,7 +1947,7 @@
     if (!e) return;
     if (!cloud.cfg) return (e.hidden = true);
     e.hidden = false;
-    const s = !cloud.utilisateur ? ['☁️ hors ligne', 'Non connecté à Firebase (Paramètres)'] : cloud.erreur ? ['☁️ ⚠', cloud.erreur] : cloud.statut === 'envoi' ? ['☁️ …', 'Enregistrement en cours'] : cloud.version === null ? ['☁️ …', 'Synchronisation'] : ['☁️ ✓', `Synchronisé (version ${cloud.version})`];
+    const s = !cloud.utilisateur ? ['☁️ hors ligne', 'Non connecté à Firebase (Paramètres)'] : !cloud.utilisateur.emailVerified ? ['☁️ ✉', 'Adresse e-mail à vérifier (Paramètres)'] : cloud.erreur ? ['☁️ ⚠', cloud.erreur] : cloud.statut === 'envoi' ? ['☁️ …', 'Enregistrement en cours'] : cloud.version === null ? ['☁️ …', 'Synchronisation'] : ['☁️ ✓', `Synchronisé (version ${cloud.version})`];
     e.textContent = s[0];
     e.title = s[1];
   }
@@ -1961,7 +1961,8 @@
         cloud.utilisateur = u;
         cloud.version = null;
         if (cloud.arret) cloud.arret();
-        cloud.arret = u ? Cloud.ecouter(cloudBase(), recevoirDistant, (err) => ((cloud.erreur = err.message), etatCloud(), render())) : null;
+        // Seules les adresses vérifiées ont accès à la base (voir firestore.rules).
+        cloud.arret = u && u.emailVerified ? Cloud.ecouter(cloudBase(), recevoirDistant, (err) => ((cloud.erreur = err.message), etatCloud(), render())) : null;
         etatCloud();
         render();
       });
@@ -2000,13 +2001,13 @@
   }
 
   function planifierEnvoi() {
-    if (!cloud.utilisateur || cloud.version === null) return;
+    if (!cloud.utilisateur || !cloud.utilisateur.emailVerified || cloud.version === null) return;
     clearTimeout(cloud.minuteur);
     cloud.minuteur = setTimeout(() => envoyerCloud(), 700);
   }
 
   async function envoyerCloud(forcer) {
-    if (!cloud.utilisateur) return;
+    if (!cloud.utilisateur || !cloud.utilisateur.emailVerified) return;
     cloud.statut = 'envoi';
     etatCloud();
     try {
@@ -2059,20 +2060,25 @@
       ? '<p class="small muted">Non configurée : les données restent uniquement dans ce navigateur.</p>'
       : `<p class="small">Projet <b>${h(c.config.projectId)}</b>, base « ${h(cloudBase())} » — ${u ? `connecté en tant que <b>${h(u.email)}</b>${cloud.version !== null ? `, version ${cloud.version}` : ''}` : 'non connecté'}.</p>${cloud.erreur ? `<p class="small neg">${h(cloud.erreur)}</p>` : ''}`;
     const connexion = c && !u
-      ? `<div class="form-grid" style="margin-top:8px"><label>E-mail Firebase<input id="fb-email" type="email" autocomplete="username"></label>
+      ? `<div class="form-grid" style="margin-top:8px"><label>E-mail<input id="fb-email" type="email" autocomplete="username"></label>
          <label>Mot de passe Firebase<input id="fb-mdp" type="password" autocomplete="current-password"></label></div>
-         <p class="small neg" id="fb-msg"></p><div class="toolbar"><button data-act="cloudConnexion">Se connecter</button></div>`
+         <p class="small muted">Première fois ? Saisissez votre e-mail et choisissez un mot de passe (8 caractères au moins), puis « Créer mon compte » : un e-mail de vérification vous sera envoyé. Seules les adresses autorisées dans les règles de sécurité accèdent aux données.</p>
+         <p class="small neg" id="fb-msg"></p><div class="toolbar"><button data-act="cloudConnexion">Se connecter</button><button class="secondary" data-act="cloudCreerCompte">Créer mon compte</button><button class="link" data-act="cloudMdpOublie">Mot de passe oublié</button></div>`
+      : '';
+    const verification = c && u && !u.emailVerified
+      ? `<div class="bandeau st-part" style="padding:8px;border-radius:8px"><p class="small" style="margin:0 0 6px">Un e-mail de vérification a été envoyé à <b>${h(u.email)}</b>. Cliquez sur le lien qu’il contient (pensez aux indésirables), puis revenez ici.</p>
+         <p class="small neg" id="fb-msg"></p><div class="toolbar" style="margin:0"><button data-act="cloudVerifie">J’ai validé mon adresse</button><button class="secondary" data-act="cloudRenvoyer">Renvoyer l’e-mail</button></div></div>`
       : '';
     const actionsU = u
-      ? `<div class="toolbar"><button class="secondary" data-act="cloudEnvoyer">Enregistrer maintenant</button><button class="secondary" data-act="cloudDeconnexion">Se déconnecter</button></div>`
+      ? `<div class="toolbar">${u.emailVerified ? '<button class="secondary" data-act="cloudEnvoyer">Enregistrer maintenant</button>' : ''}<button class="secondary" data-act="cloudDeconnexion">Se déconnecter</button></div>`
       : '';
     return `<div class="card" style="margin-top:12px"><h2 style="margin-top:0">Synchronisation Firebase</h2>
       <p class="small muted">Retrouvez les mêmes données sur tous vos appareils, et laissez Claude les mettre à jour à partir de vos documents.
       Les données sont stockées dans votre base Firestore, accessibles uniquement aux comptes autorisés par vos règles de sécurité.</p>
-      ${etat}${connexion}${actionsU}
+      ${etat}${verification}${connexion}${actionsU}
       <details ${c ? '' : 'open'}><summary>${c ? 'Modifier la configuration' : 'Configurer'}</summary>
-        <p class="small">Collez le bloc <code>firebaseConfig</code> de votre application Web (console Firebase → Paramètres du projet → Vos applications).</p>
-        <textarea id="fb-config" rows="6" placeholder="const firebaseConfig = { apiKey: &quot;…&quot;, authDomain: &quot;…&quot;, projectId: &quot;…&quot;, … };">${c ? h(JSON.stringify(c.config, null, 2)) : ''}</textarea>
+        <p class="small">Projet <b>${h(Cloud.PROJET.projectId)}</b> : collez la <b>clé API</b> (« AIza… ») de l’application Web, ou tout le bloc <code>firebaseConfig</code> (console Firebase → ⚙ Paramètres du projet → Général → Vos applications).</p>
+        <textarea id="fb-config" rows="${c ? 6 : 2}" placeholder="AIza…   ou   const firebaseConfig = { apiKey: &quot;…&quot;, … };">${c ? h(JSON.stringify(c.config, null, 2)) : ''}</textarea>
         <label class="small muted" style="display:block;margin-top:6px">Nom de la base<input id="fb-base" value="${h(cloudBase())}" style="max-width:220px"></label>
         <p class="small neg" id="fb-cfg-msg"></p>
         <div class="toolbar"><button data-act="cloudConfigurer">Enregistrer la configuration</button>${c ? '<button class="danger" data-act="cloudOublier">Désactiver</button>' : ''}</div>
@@ -2102,16 +2108,45 @@
     etatCloud();
     render();
   };
-  actions.cloudConnexion = async () => {
+  actions.cloudConnexion = () => actionCompte('Connexion…', () => Cloud.connexion(...champsCompte()));
+  const champsCompte = () => [document.getElementById('fb-email').value.trim(), document.getElementById('fb-mdp').value];
+  async function actionCompte(texte, fn) {
     const msg = document.getElementById('fb-msg');
-    msg.textContent = 'Connexion…';
+    msg.className = 'small';
+    msg.textContent = texte;
     try {
       if (!cloud.pret) await demarrerCloud();
-      await Cloud.connexion(document.getElementById('fb-email').value.trim(), document.getElementById('fb-mdp').value);
+      const r = await fn();
+      if (r) msg.textContent = r;
     } catch (e) {
+      msg.className = 'small neg';
       msg.textContent = e.message;
     }
-  };
+  }
+  actions.cloudCreerCompte = () => actionCompte('Création du compte…', () => Cloud.creerCompte(...champsCompte()));
+  actions.cloudMdpOublie = () =>
+    actionCompte('Envoi…', async () => {
+      const [email] = champsCompte();
+      if (!email) throw new Error('indiquez votre adresse e-mail');
+      await Cloud.reinitialiser(email);
+      return `Si un compte existe pour ${email}, un e-mail pour choisir un nouveau mot de passe vient d’être envoyé.`;
+    });
+  actions.cloudRenvoyer = () =>
+    actionCompte('Envoi…', async () => {
+      await Cloud.envoyerVerification();
+      return 'E-mail de vérification renvoyé.';
+    });
+  actions.cloudVerifie = () =>
+    actionCompte('Vérification…', async () => {
+      if (!(await Cloud.actualiser())) return 'Adresse pas encore vérifiée : cliquez sur le lien de l’e-mail, puis réessayez.';
+      const u = Cloud.utilisateur();
+      cloud.utilisateur = u;
+      cloud.version = null;
+      if (cloud.arret) cloud.arret();
+      cloud.arret = Cloud.ecouter(cloudBase(), recevoirDistant, (err) => ((cloud.erreur = err.message), etatCloud(), render()));
+      etatCloud();
+      render();
+    });
   actions.cloudDeconnexion = async () => {
     await Cloud.deconnexion();
     render();

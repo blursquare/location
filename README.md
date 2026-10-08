@@ -34,25 +34,30 @@ Aucune installation ni serveur : ouvrez `index.html` dans un navigateur, ou la v
 
 Sans configuration, les données restent dans le navigateur. Avec Firebase, elles sont stockées dans **votre** base Firestore : mêmes données sur tous les appareils, mises à jour **en direct**, historique de chaque version, et possibilité pour Claude de les mettre à jour à partir de vos documents.
 
-### Mise en place (une fois, ~10 minutes)
+### Mise en place (projet `location-1a379`, une fois, ~5 minutes)
 
-1. **Projet** : [console.firebase.google.com](https://console.firebase.google.com) → *Ajouter un projet* (Google Analytics inutile).
-2. **Application Web** : *Paramètres du projet → Vos applications → </>* ; copiez le bloc `firebaseConfig`.
-3. **Firestore** : *Firestore Database → Créer une base de données*, en mode production, région `eur3` (Europe).
-4. **Comptes** : *Authentication → Méthode de connexion → Adresse e-mail/Mot de passe → Activer*. Puis *Users → Ajouter un utilisateur* : un compte par personne (vous, votre conjoint) **et un compte dédié à Claude** (e-mail et mot de passe de votre choix).
-5. **Règles** : *Firestore Database → Règles* : collez le contenu de [`firestore.rules`](firestore.rules) en remplaçant `UID_BASTIEN`, `UID_SOPHIE`, `UID_CLAUDE` par les UID des comptes (colonne *UID utilisateur* de la liste des utilisateurs), puis *Publier*. Seuls ces comptes peuvent lire ou écrire.
-6. **Dans l'outil** : *Paramètres → Synchronisation Firebase* : collez le bloc `firebaseConfig`, puis connectez-vous. Si la base est vide, vos données y sont envoyées ; si elle existe déjà, l'outil la récupère (ou vous demande laquelle garder si les deux diffèrent).
+Le dépôt contient déjà la configuration du projet (`.firebaserc`, `firebase.json`, `firestore.rules`) et l'identifiant de l'application Web (`1:740693444167:web:fe84267b5c447f3f875362`).
+
+1. **Authentification** : [console Firebase](https://console.firebase.google.com/project/location-1a379/authentication/providers) → *Authentication → Commencer → Adresse e-mail/Mot de passe → Activer* (sans « lien par e-mail »).
+2. **Firestore** : *Firestore Database → Créer une base de données* → édition **Standard**, identifiant `(default)`, emplacement `europe-west9 (Paris)`, **mode production**.
+3. **Règles** : *Firestore Database → Règles* : collez [`firestore.rules`](firestore.rules) puis *Publier*. Elles n'autorisent que les adresses **vérifiées** listées dans `adressesAutorisees()` (Bastien et le compte de Claude ; ajoutez celle de Sophie au besoin).
+4. **Clé API** : *⚙ Paramètres du projet → Général → Vos applications* : copiez la valeur `apiKey` (« AIza… »).
+5. **Dans l'outil** : *Paramètres → Synchronisation Firebase* : collez la clé API, *Enregistrer la configuration*, saisissez votre e-mail et un mot de passe, puis **Créer mon compte**. Cliquez sur le lien de l'e-mail de vérification, puis sur *J'ai validé mon adresse*. Si la base est vide, vos données y sont envoyées ; si elle existe déjà, l'outil la récupère (ou vous demande laquelle garder si les deux diffèrent).
+
+Avec le Firebase CLI (connecté à un compte propriétaire du projet), les étapes 1 et 3 se font aussi par `npx -y firebase-tools@latest deploy --only auth,firestore:rules`.
 
 ### Sécurité
 
-- L'accès est réservé aux comptes listés dans les règles ; la configuration `firebaseConfig` n'est pas secrète.
-- Chaque écriture incrémente une version : deux appareils ne peuvent pas s'écraser sans que l'un soit prévenu. Chaque version est conservée dans `gestion/principal/historique`.
-- Dans le navigateur, les données restent chiffrées par votre mot de passe local. Dans Firestore, elles sont protégées par l'authentification et les règles (et chiffrées au repos par Google), mais **pas chiffrées de bout en bout** : c'est ce qui permet à Claude de les mettre à jour. Pour retirer cet accès, supprimez le compte de Claude dans *Authentication*.
+- Accès réservé aux comptes e-mail/mot de passe dont l'adresse est **vérifiée** et figure dans les règles : n'importe qui peut créer un compte avec la clé API (qui n'est pas secrète), mais sans accès aux données. La vérification empêche de se faire passer pour une adresse autorisée.
+- Les règles valident chaque écriture : champs attendus uniquement, version incrémentée de 1 (deux appareils ne peuvent pas s'écraser sans que l'un soit prévenu), auteur (`majPar`) égal à l'adresse connectée, heure fixée par le serveur. Suppression interdite ; chaque version est conservée dans `gestion/principal/historique`, non modifiable.
+- *Mot de passe oublié* envoie un e-mail de réinitialisation.
+- Dans le navigateur, les données restent chiffrées par votre mot de passe local. Dans Firestore, elles sont protégées par l'authentification et les règles (et chiffrées au repos par Google), mais **pas chiffrées de bout en bout** : c'est ce qui permet à Claude de les mettre à jour. Pour retirer cet accès, retirez son adresse des règles ou supprimez son compte dans *Authentication*.
 
 ### Mise à jour par Claude (ligne de commande)
 
 ```bash
-export FIREBASE_CONFIG=config.json FIREBASE_EMAIL=… FIREBASE_MDP=…
+export FIREBASE_CONFIG=AIza… FIREBASE_EMAIL=anglument.b+claude@gmail.com FIREBASE_MDP=…
+node outils/firebase-maj.js inscription          # crée le compte et envoie l'e-mail de vérification
 node outils/firebase-maj.js lire                 # résumé de la base
 node outils/firebase-maj.js fusionner ops.json   # ajoute charges / encaissements, sans doublon
 node outils/firebase-maj.js modifier script.js   # modification ciblée (script(donnees) → donnees)
