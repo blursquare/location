@@ -335,7 +335,7 @@
   // ---------- Navigation ----------
   const nav = document.getElementById('nav');
   nav.addEventListener('click', (e) => {
-    const v = e.target.dataset.view;
+    const v = (e.target.closest('[data-view]') || {}).dataset?.view;
     if (!v) return;
     location.hash = v;
   });
@@ -383,7 +383,10 @@
   function render() {
     if (!cle) return; // verrouillé : l'écran de mot de passe reste affiché
     fillYears();
-    for (const b of nav.querySelectorAll('button')) b.classList.toggle('active', b.dataset.view === view);
+    for (const b of nav.querySelectorAll('button')) {
+      b.classList.toggle('active', b.dataset.view === view);
+      if (b.dataset.view === view && b.scrollIntoView) b.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
     const fn = views[view] || views.dashboard;
     const avert = dialoguesBloques
       ? '<div class="card bandeau st-due" style="margin-bottom:12px">Ce navigateur bloque les fenêtres de confirmation : certaines actions (suppressions, imports de fichiers) ne peuvent pas aboutir. Ouvrez l\'outil dans Safari ou Chrome (menu « Ouvrir dans le navigateur »).</div>'
@@ -428,6 +431,106 @@
     }</table></div>`;
   }
 
+  // ---------- Composants d'interface (cartes, tuiles, jauges, graphiques) ----------
+  // Couleur d'identité d'un bien : palette catégorielle à ordre fixe (--s1…--s8), selon le rang du bien.
+  const couleurBien = (id) => `var(--s${(Math.max(db.biens.findIndex((b) => b.id === id), 0) % 8) + 1})`;
+  const ICONES_BIEN = { appartement: '🏢', studio: '🛏️', maison: '🏡', parking: '🚗', local: '🏪' };
+  const iconeBien = (b) => ICONES_BIEN[(b || {}).type] || '🏠';
+  const initiales = (n) =>
+    String(n || '?')
+      .replace(/^(M\.|Mme|Mlle|M)\s+/i, '')
+      .split(/[\s-]+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((x) => x[0].toUpperCase())
+      .join('');
+  const avatar = (nom, couleur, cls = '') => `<span class="avatar ${cls}" style="--c:${couleur}" aria-hidden="true">${h(initiales(nom))}</span>`;
+  const chip = (texte, couleur) => `<span class="chip">${couleur ? `<span class="dot" style="--c:${couleur}"></span>` : ''}${texte}</span>`;
+  const nomProprioCourt = (b) => {
+    const p = proprio(b);
+    return /^sci/.test(p.type || '') ? '🏛️ ' + h(p.nom) : '👫 Nom propre';
+  };
+  // Un loyer encaissé par une agence n'arrive qu'avec son relevé : il n'est en retard qu'après la fin du mois.
+  const echeanceEffective = (bail, periode) => {
+    if (!gestionnaire(bienById(bail.bienId))) return C.dateEcheance(bail, periode);
+    const [y, m] = periode.split('-').map(Number);
+    return `${periode}-${String(C.daysInMonth(y, m)).padStart(2, '0')}`;
+  };
+  const tuile = (ico, label, value, sub = '', ton = '') =>
+    `<div class="card tile ${ton}"><div class="ico" aria-hidden="true">${ico}</div><div><div class="label">${label}</div><div class="value">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div></div>`;
+  const barre = (ratio, ton = '') => `<div class="progress ${ton}" role="progressbar" aria-valuenow="${Math.round(Math.max(0, Math.min(1, ratio)) * 100)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${Math.max(0, Math.min(1, ratio)) * 100}%"></span></div>`;
+  const anneau = (ratio, centre, ton = 'ok') => {
+    const r = 52;
+    const c = 2 * Math.PI * r;
+    const v = Math.max(0, Math.min(1, ratio));
+    const couleur = ton === 'bad' ? 'var(--bad-mark)' : ton === 'warn' ? 'var(--warn-mark)' : 'var(--ok-mark)';
+    return `<div class="ring"><svg width="120" height="120" viewBox="0 0 120 120" aria-hidden="true"><circle cx="60" cy="60" r="${r}" fill="none" stroke="var(--surface-2)" stroke-width="12"/>
+      <circle cx="60" cy="60" r="${r}" fill="none" stroke="${couleur}" stroke-width="12" stroke-linecap="round" stroke-dasharray="${(c * v).toFixed(1)} ${c.toFixed(1)}"/></svg><div class="centre">${centre}</div></div>`;
+  };
+  const enTetePage = (ico, titre, sous = '', droite = '') =>
+    `<div class="page-head"><div class="titre"><div class="ico-page" aria-hidden="true">${ico}</div><div><h1>${titre}</h1>${sous ? `<div class="sous">${sous}</div>` : ''}</div></div><span class="spacer"></span>${droite}</div>`;
+  const enTeteSection = (titre, droite = '') => `<div class="section-head"><h2>${titre}</h2><span class="spacer"></span>${droite}</div>`;
+  const vide = (ico, texte) => `<div class="card empty"><span class="big-ico" aria-hidden="true">${ico}</span>${texte}</div>`;
+  const btnIco = (act, id, ico, titre, danger) => `<button class="icon${danger ? ' danger' : ''}" data-act="${act}" data-id="${id}" title="${h(titre)}" aria-label="${h(titre)}">${ico}</button>`;
+  /** Ligne-carte : icône, texte principal et secondaire, montant, actions. */
+  const item = ({ ico = '', avatarHtml = '', t, s = '', montant = '', montantSub = '', acts = '', cls = '' }) =>
+    `<div class="item ${cls}">${avatarHtml || (ico ? `<div class="ico" aria-hidden="true">${ico}</div>` : '')}<div class="txt"><div class="t">${t}</div>${s ? `<div class="s">${s}</div>` : ''}</div>${
+      montant !== '' ? `<div class="montant">${montant}${montantSub ? `<div class="s">${montantSub}</div>` : ''}</div>` : ''
+    }${acts ? `<div class="acts">${acts}</div>` : ''}</div>`;
+  /**
+   * Barres empilées par mois (une série par bien, couleur d'identité, ordre fixe), avec info-bulle.
+   * series : [{ nom, couleur, valeurs: [12 nombres] }]
+   */
+  function barresMois(series, { hauteur = 220 } = {}) {
+    const L = 420;
+    const H = hauteur;
+    const g = 28;
+    const totaux = MOIS.map((_, i) => series.reduce((t, x) => t + Math.max(0, x.valeurs[i] || 0), 0));
+    const max = Math.max(...totaux, 1);
+    const pas = Math.pow(10, Math.floor(Math.log10(max)));
+    const haut = Math.ceil(max / pas) * pas;
+    const bw = (L - g) / 12;
+    const y = (v) => H - 18 - (v / haut) * (H - 30);
+    let out = '';
+    for (const v of [0, haut / 2, haut]) out += `<line class="axe" x1="${g}" x2="${L}" y1="${y(v)}" y2="${y(v)}"/><text x="${g - 6}" y="${y(v) + 4}" text-anchor="end">${Math.round(v).toLocaleString('fr-FR')}</text>`;
+    MOIS.forEach((m, i) => {
+      let base = 0;
+      const x = g + i * bw + bw * 0.18;
+      const w = bw * 0.64;
+      const detail = series.filter((sr) => sr.valeurs[i]).map((sr) => `${h(sr.nom)} : ${eur(sr.valeurs[i])}`).join('<br>');
+      series.forEach((sr, k) => {
+        const v = Math.max(0, sr.valeurs[i] || 0);
+        if (!v) return;
+        const y1 = y(base + v);
+        const y0 = y(base);
+        const hgt = Math.max(y0 - y1 - (base ? 2 : 0), 1);
+        const dessus = !series.slice(k + 1).some((o) => o.valeurs[i] > 0);
+        out += `<rect class="barre" x="${x}" y="${y1}" width="${w}" height="${hgt}" rx="${dessus ? 4 : 0}" fill="${sr.couleur}"/>`;
+        base += v;
+      });
+      out += `<rect x="${g + i * bw}" y="0" width="${bw}" height="${H - 18}" fill="transparent" data-tip="${h(`<b>${m} ${annee}</b><br>${detail || 'Aucun encaissement'}${detail ? `<br><b>Total : ${eur(totaux[i])}</b>` : ''}`)}"/>`;
+      out += `<text x="${g + i * bw + bw / 2}" y="${H - 4}" text-anchor="middle">${m}</text>`;
+    });
+    const legende = series.length > 1 ? `<div class="legende" style="margin-top:8px">${series.map((sr) => `<span><i style="background:${sr.couleur}"></i>${h(sr.nom)}</span>`).join('')}</div>` : '';
+    return `<div class="chart"><svg viewBox="0 0 ${L} ${H}" role="img" aria-label="Encaissements par mois">${out}</svg>${legende}</div>`;
+  }
+  // Info-bulles des graphiques
+  const bulle = document.createElement('div');
+  bulle.className = 'tooltip';
+  bulle.hidden = true;
+  document.body.appendChild(bulle);
+  const montrerBulle = (e) => {
+    const t = e.target.closest && e.target.closest('[data-tip]');
+    if (!t) return (bulle.hidden = true);
+    bulle.innerHTML = t.dataset.tip;
+    bulle.hidden = false;
+    const x = Math.min(e.clientX + 14, window.innerWidth - bulle.offsetWidth - 8);
+    bulle.style.left = x + 'px';
+    bulle.style.top = e.clientY + 14 + 'px';
+  };
+  document.addEventListener('mousemove', montrerBulle);
+  document.addEventListener('click', montrerBulle);
+
   // =====================================================================
   // Vues
   // =====================================================================
@@ -436,7 +539,7 @@
   // ---------- Tableau de bord ----------
   views.dashboard = () => {
     if (!db.biens.length) {
-      return `<h1>Bienvenue</h1>
+      return `${enTetePage('👋', 'Bienvenue')}
       <div class="card">
         <p>Cet outil vous aide à suivre vos biens en location, détenus en SCI ou en nom propre, gérés en direct ou par une agence, en copropriété ou non : loyers, charges et appels de fonds, régularisation annuelle, prêts immobiliers et revenus fonciers.</p>
         <p>Pour commencer : déclarez vos <b>SCI</b> et votre <b>gestionnaire</b>, puis vos <b>biens</b> (onglet Biens).</p>
@@ -446,66 +549,96 @@
       ${cloud.cfg && !(cloud.utilisateur && cloud.utilisateur.emailVerified) ? `<p style="margin:16px 0 0"><b>Vos données sont déjà sur un autre appareil ?</b> Connectez-vous ci-dessous pour les retrouver.</p>${htmlCarteCloud()}` : ''}`;
     }
     const s = C.syntheseAnnee(db, annee, idsFiltre());
-    const kpi = (label, value, cls = '') => `<div class="card kpi"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`;
-    const lastPeriod = annee < Number(currentPeriod().slice(0, 4)) ? `${annee}-12` : currentPeriod();
+    const cur = Number(currentPeriod().slice(0, 4));
+    const lastPeriod = annee < cur ? `${annee}-12` : currentPeriod();
     const impayes = [];
-    if (annee <= Number(currentPeriod().slice(0, 4))) {
+    let duADate = 0;
+    let payeADate = 0;
+    if (annee <= cur) {
       for (const b of db.baux.filter((b) => dans(b.bienId))) {
         for (const e of C.situationBail(b, db.paiements, `${annee}-01`, lastPeriod)) {
-          if (e.reste > 0.009 && C.dateEcheance(b, e.periode) <= today()) impayes.push({ b, e });
+          if (echeanceEffective(b, e.periode) > today()) continue;
+          duADate += e.du;
+          payeADate += Math.min(e.paye, e.du);
+          if (e.reste > 0.009) impayes.push({ b, e });
         }
       }
     }
     const totImpayes = impayes.reduce((t, { e }) => t + e.reste, 0);
-    const parBien = db.biens
-      .filter((b) => dans(b.id))
+    const taux = duADate ? payeADate / duADate : 1;
+    const biens = db.biens.filter((b) => dans(b.id));
+    // Héros : taux d'encaissement des loyers échus
+    const hero = `<div class="card hero">${anneau(taux, `<div><b>${Math.round(taux * 100)} %</b><span class="tiny muted">encaissé</span></div>`, taux >= 0.999 ? 'ok' : taux >= 0.9 ? 'warn' : 'bad')}
+      <div><div class="muted small">Loyers et provisions encaissés en ${annee}</div><div class="big">${eur(s.encaisse)}</div>
+      <div class="small" style="margin-top:6px">${totImpayes > 0.009 ? `<span class="badge st-due">⚠ ${eur(totImpayes)} d'impayés</span>` : '<span class="badge st-ok">✓ Aucun impayé à ce jour</span>'}
+      ${annee === cur ? ` <span class="muted">sur ${eur(duADate)} échus</span>` : ''}</div></div></div>`;
+    const tuiles = `<div class="cards" style="margin-top:12px">
+        ${tuile('💸', 'Cash-flow', `<span class="${s.cashFlow < 0 ? 'neg' : 'pos'}">${eur(s.cashFlow)}</span>`, 'loyers − charges − prêts', s.cashFlow < 0 ? 'bad' : 'ok')}
+        ${tuile('🧾', 'Charges & taxes', eur(s.chargesTotal), `dont ${eur(s.chargesRecup)} récupérables`, 'warn')}
+        ${tuile('🏦', 'Échéances de prêt', eur(s.pretTotal), `capital restant ${eur(s.crdFin)}`, 'info')}
+        ${tuile('📈', 'Rendement', pct(s.rendementBrut), `net de charges : ${pct(s.rendementNet)}`, 'ok')}
+      </div>`;
+    // Graphique : encaissements mensuels par bien
+    const series = biens.map((b) => {
+      const ids = new Set(db.baux.filter((x) => x.bienId === b.id).map((x) => x.id));
+      const valeurs = MOIS.map((_, i) => {
+        const p = C.periodKey(annee, i + 1);
+        return db.paiements.filter((x) => ids.has(x.bailId) && x.periode === p && C.estLoyer(x)).reduce((t, x) => t + (Number(x.montant) || 0), 0);
+      });
+      return { nom: b.nom, couleur: couleurBien(b.id), valeurs };
+    });
+    const graphique = `<div class="card"><div class="between"><h3>📅 Loyers encaissés par mois</h3><a href="#loyers" class="small">Détail →</a></div><div style="margin-top:10px">${barresMois(series)}</div></div>`;
+    // Cartes des biens
+    const cartes = biens
       .map((b) => {
         const x = C.syntheseAnnee(db, annee, b.id);
+        const bail = db.baux.find((l) => l.bienId === b.id && (!l.dateFin || l.dateFin >= today()));
         const g = gestionnaire(b);
-        return `<tr><td>${h(b.nom)}<div class="small muted">${h(proprio(b).nom || '')} · ${g ? h(g.nom) : 'gestion directe'}${b.enCopropriete ? '' : ' · hors copro'}</div></td><td class="num">${eur(x.encaisse)}</td><td class="num">${eur(x.chargesTotal)}</td>
-          <td class="num">${eur(x.pretTotal)}</td><td class="num">${signed(x.cashFlow)}</td>
-          <td class="num">${pct(x.rendementBrut)}</td><td class="num">${eur(x.crdFin)}</td></tr>`;
-      });
-    const parProprio =
-      db.proprietaires.length > 1
-        ? db.proprietaires
-            .map((p) => {
-              const ids = db.biens.filter((b) => b.proprietaireId === p.id && dans(b.id)).map((b) => b.id);
-              if (!ids.length) return '';
-              const x = C.syntheseAnnee(db, annee, ids);
-              return `<tr><td><b>${h(p.nom)}</b><div class="small muted">${h(typeProprio(p))} · ${ids.length} bien(s)</div></td><td class="num">${eur(x.encaisse)}</td><td class="num">${eur(x.chargesTotal)}</td>
-                <td class="num">${eur(x.pretTotal)}</td><td class="num">${signed(x.cashFlow)}</td><td class="num">${signed(x.resultatFoncier)}</td><td class="num">${eur(x.crdFin)}</td></tr>`;
-            })
-            .filter(Boolean)
-        : [];
-    const alertes = alertesBaux();
-    return `<div class="toolbar"><h1 style="margin:0">Tableau de bord ${annee}</h1><span class="spacer"></span>${bienFilter()}</div>
-      <div class="cards">
-        ${kpi('Loyers + provisions encaissés', eur(s.encaisse))}
-        ${kpi('Impayés à date', eur(totImpayes), totImpayes > 0 ? 'neg' : '')}
-        ${kpi('Charges & taxes payées', eur(s.chargesTotal))}
-        ${kpi('Échéances de prêt', eur(s.pretTotal))}
-        ${kpi('Cash-flow', eur(s.cashFlow), s.cashFlow < 0 ? 'neg' : 'pos')}
-        ${kpi('Capital restant dû au 31/12', eur(s.crdFin))}
-        ${kpi('Rendement brut', pct(s.rendementBrut))}
-        ${kpi('Rendement net de charges', pct(s.rendementNet))}
-      </div>
-      ${parProprio.length ? `<h2>Par propriétaire</h2>${table(['Propriétaire', { label: 'Encaissé', cls: 'num' }, { label: 'Charges', cls: 'num' }, { label: 'Prêts', cls: 'num' }, { label: 'Cash-flow', cls: 'num' }, { label: 'Résultat fiscal est.', cls: 'num' }, { label: 'CRD 31/12', cls: 'num' }], parProprio)}` : ''}
-      <h2>Par bien</h2>
-      ${table(
-        ['Bien', { label: 'Encaissé', cls: 'num' }, { label: 'Charges', cls: 'num' }, { label: 'Prêts', cls: 'num' }, { label: 'Cash-flow', cls: 'num' }, { label: 'Rdt brut', cls: 'num' }, { label: 'CRD 31/12', cls: 'num' }],
-        parBien
-      )}
-      <h2>Échéances non soldées</h2>
-      ${table(
-        ['Locataire', 'Bien', 'Période', { label: 'Dû', cls: 'num' }, { label: 'Payé', cls: 'num' }, { label: 'Reste', cls: 'num' }, ''],
-        impayes.map(
-          ({ b, e }) => `<tr><td>${h(b.locataire)}</td><td>${h(bienNom(b.bienId))}</td><td>${periodeLabel(e.periode)}</td>
-          <td class="num">${eur(e.du)}</td><td class="num">${eur(e.paye)}</td><td class="num neg">${eur(e.reste)}</td>
-          <td><button class="link" data-act="payer" data-bail="${b.id}" data-periode="${e.periode}">Encaisser</button></td></tr>`
-        )
-      )}
-      ${alertes.length ? `<h2>À prévoir</h2><div class="card"><ul>${alertes.map((a) => `<li>${a}</li>`).join('')}</ul></div>` : ''}`;
+        const ratio = x.totalDu ? Math.min(x.encaisse, x.totalDu) / x.totalDu : 0;
+        return `<div class="card bien-card" style="--c:${couleurBien(b.id)}"><div class="bandeau-bien"></div><div class="corps">
+          <div class="entete"><div class="pastille" aria-hidden="true">${iconeBien(b)}</div><div style="min-width:0"><h3>${h(b.nom)}</h3>
+            <div class="chips" style="margin-top:4px">${chip(nomProprioCourt(b))}${chip(g ? '🤝 ' + h(g.nom.split(' (')[0]) : '🔑 En direct')}</div></div></div>
+          <div class="row">${bail ? `${avatar(bail.locataire, couleurBien(b.id), 'sm')}<div class="small"><b>${h(bail.locataire)}</b><div class="muted">depuis le ${dateFr(bail.dateDebut)}</div></div>` : '<span class="badge st-future">Vacant</span>'}</div>
+          <div class="mini-stats"><div><div class="l">Encaissé</div><div class="v">${eur(x.encaisse)}</div></div>
+            <div><div class="l">Cash-flow</div><div class="v ${x.cashFlow < 0 ? 'neg' : 'pos'}">${eur(x.cashFlow)}</div></div>
+            <div><div class="l">Rendement</div><div class="v">${pct(x.rendementBrut)}</div></div></div>
+          <div><div class="between tiny muted"><span>Loyers ${annee} encaissés</span><span>${Math.round(ratio * 100)} %</span></div>${barre(ratio, 'ok')}</div>
+        </div></div>`;
+      })
+      .join('');
+    // À faire : impayés et rappels
+    const aFaire = [
+      ...impayes.map(({ b, e }) =>
+        item({
+          avatarHtml: avatar(b.locataire, couleurBien(b.bienId), 'sm'),
+          t: `${h(b.locataire)} — ${periodeLabel(e.periode)}`,
+          s: h(bienNom(b.bienId)),
+          montant: `<span class="neg">${eur(e.reste)}</span>`,
+          acts: `<button class="secondary" data-act="payer" data-bail="${b.id}" data-periode="${e.periode}">Encaisser</button>`,
+        })
+      ),
+      ...alertesBaux().map((a) => item({ ico: '🔔', t: a })),
+    ];
+    // À venir : charges datées dans les 90 prochains jours
+    const dans90 = new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10);
+    const avenir = db.charges
+      .filter((c) => dans(c.bienId) && c.date > today() && c.date <= dans90)
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .slice(0, 8)
+      .map((c) => {
+        const d = new Date(c.date + 'T00:00:00');
+        return `<div class="ev"><div class="date"><b>${d.getDate()}</b><span>${MOIS[d.getMonth()]}</span></div>
+          <div class="between"><div><div style="font-weight:600">${h(c.libelle)}</div><div class="tiny muted">${chip(h(bienNom(c.bienId)), couleurBien(c.bienId))}</div></div><b>${eur(c.montant)}</b></div></div>`;
+      })
+      .join('');
+    return `${enTetePage('📊', `Tableau de bord ${annee}`, `${biens.length} bien(s) · ${db.baux.filter((b) => dans(b.bienId) && (!b.dateFin || b.dateFin >= today())).length} locataire(s)`, bienFilter())}
+      <div class="grid-2"><div>${hero}${tuiles}</div>${graphique}</div>
+      ${enTeteSection('🏠 Vos biens', '<a href="#biens" class="small">Tout voir →</a>')}
+      <div class="grid-3">${cartes}</div>
+      <div class="grid-2" style="margin-top:14px">
+        <div class="card"><h3>✅ À faire</h3><div class="liste" style="margin-top:10px">${aFaire.join('') || '<div class="muted small">Rien à signaler, tout est à jour. 🎉</div>'}</div></div>
+        <div class="card"><h3>🗓️ À venir (90 jours)</h3><div class="timeline" style="margin-top:6px">${avenir || '<div class="muted small" style="padding:8px 0">Aucune échéance enregistrée.</div>'}</div></div>
+      </div>`;
   };
   actions.goto = (d) => (location.hash = d.v);
 
@@ -578,40 +711,48 @@
   ];
   const typeProprio = (p) => (C.TYPES_PROPRIETAIRE[p.type] || { label: '' }).label;
   views.biens = () => {
-    const rows = db.biens.map((b) => {
+    const carteBien = (b) => {
       const bail = db.baux.find((x) => x.bienId === b.id && (!x.dateFin || x.dateFin >= today()));
       const g = gestionnaire(b);
-      const copro = b.enCopropriete
-        ? `${h(b.copropriete || 'Copropriété')}<div class="small muted">${h(b.syndic || '')}${b.tantiemes && b.tantiemesTotal ? ` · ${h(b.tantiemes)}/${h(b.tantiemesTotal)}` : ''}</div>`
-        : '<span class="muted">Hors copropriété</span>';
-      return `<tr><td><b>${h(b.nom)}</b><div class="small muted">${h(b.adresse)}</div></td>
-        <td>${h(proprio(b).nom || '—')}</td>
-        <td>${b.gestionMode === 'agence' ? `<span class="badge st-part">Agence</span> ${h(g ? g.nom : '?')}` : '<span class="badge st-future">Direct</span>'}</td>
-        <td>${copro}</td>
-        <td class="num">${eur((Number(b.prixAchat) || 0) + (Number(b.fraisAcquisition) || 0))}</td>
-        <td>${bail ? `<span class="badge st-ok">Loué</span> ${h(bail.locataire)}` : '<span class="badge st-future">Vacant</span>'}</td>
-        <td><button class="link" data-act="editBien" data-id="${b.id}">Modifier</button>
-        <button class="link danger" data-act="delBien" data-id="${b.id}">Supprimer</button></td></tr>`;
-    });
-    const props = db.proprietaires.map((p) => {
-      const nb = db.biens.filter((b) => b.proprietaireId === p.id).length;
-      const ass = C.associes(p.associes);
-      return `<tr><td><b>${h(p.nom)}</b><div class="small muted">${h(p.siren ? 'SIREN ' + p.siren : '')}</div></td><td>${h(typeProprio(p))}</td>
-        <td>${h(p.gerant || '—')}</td><td class="small">${ass.map((a) => `${h(a.nom)}${a.pct === null ? '' : ' ' + pct(a.pct)}`).join('<br>') || '—'}</td><td class="num">${nb}</td>
-        <td><button class="link" data-act="editProprio" data-id="${p.id}">Modifier</button><button class="link danger" data-act="delProprio" data-id="${p.id}">Supprimer</button></td></tr>`;
-    });
-    const gests = db.gestionnaires.map((g) => {
-      const nb = db.biens.filter((b) => b.gestionMode === 'agence' && b.gestionnaireId === g.id).length;
-      return `<tr><td><b>${h(g.nom)}</b><div class="small muted">${h(g.contact || '')}</div></td><td class="small">${h(g.email || '')}<br>${h(g.telephone || '')}</td>
-        <td class="num">${g.honorairesPct ? pct(g.honorairesPct) : '—'}</td><td class="num">${nb}</td>
-        <td><button class="link" data-act="editGest" data-id="${g.id}">Modifier</button><button class="link danger" data-act="delGest" data-id="${g.id}">Supprimer</button></td></tr>`;
-    });
-    return `<div class="toolbar"><h1 style="margin:0">Biens</h1><span class="spacer"></span><button data-act="editBien">+ Ajouter un bien</button></div>
-      ${table(['Bien', 'Propriétaire', 'Gestion', 'Copropriété', { label: 'Coût total', cls: 'num' }, 'Occupation', ''], rows)}
-      <div class="toolbar" style="margin-top:24px"><h2 style="margin:0">Propriétaires (SCI…)</h2><span class="spacer"></span><button class="secondary" data-act="editProprio">+ Propriétaire</button></div>
-      ${table(['Dénomination', 'Forme', 'Gérant', 'Associés', { label: 'Biens', cls: 'num' }, ''], props)}
-      <div class="toolbar" style="margin-top:24px"><h2 style="margin:0">Gestionnaires</h2><span class="spacer"></span><button class="secondary" data-act="editGest">+ Gestionnaire</button></div>
-      ${table(['Gestionnaire', 'Contact', { label: 'Honoraires', cls: 'num' }, { label: 'Biens', cls: 'num' }, ''], gests)}`;
+      const cout = (Number(b.prixAchat) || 0) + (Number(b.fraisAcquisition) || 0);
+      const pret = db.prets.find((p) => p.bienId === b.id);
+      const crd = pret ? C.crdAu(pret, today()) : 0;
+      return `<div class="card bien-card" style="--c:${couleurBien(b.id)}"><div class="bandeau-bien"></div><div class="corps">
+        <div class="entete"><div class="pastille" aria-hidden="true">${iconeBien(b)}</div><div style="min-width:0;flex:1"><h3>${h(b.nom)}</h3><div class="tiny muted">📍 ${h(b.adresse)}</div></div></div>
+        <div class="chips">${chip(g ? '🤝 ' + h(g.nom.split(' (')[0]) : '🔑 Gestion directe')}${chip(b.enCopropriete ? '🏘️ ' + h(b.copropriete || 'Copropriété') : '🏡 Hors copropriété')}${b.surface ? chip('📐 ' + h(String(b.surface).replace('.', ',')) + ' m²') : ''}</div>
+        <div class="row">${bail ? `${avatar(bail.locataire, couleurBien(b.id), 'sm')}<div class="small"><b>${h(bail.locataire)}</b><div class="muted">locataire depuis le ${dateFr(bail.dateDebut)}</div></div>` : '<span class="badge st-future">🔓 Vacant</span>'}</div>
+        <div class="mini-stats"><div><div class="l">Coût d'achat</div><div class="v">${cout ? eur(cout) : '—'}</div></div>
+          <div><div class="l">Reste à rembourser</div><div class="v">${pret ? eur(crd) : 'sans prêt'}</div></div></div>
+        ${pret ? `<div><div class="between tiny muted"><span>🏦 Prêt remboursé</span><span>${Math.round((1 - crd / pret.capital) * 100)} %</span></div>${barre(1 - crd / pret.capital)}</div>` : ''}
+        <div class="card-actions">${btnIco('editBien', b.id, '✏️', 'Modifier')}${btnIco('delBien', b.id, '🗑️', 'Supprimer', true)}</div>
+      </div></div>`;
+    };
+    const groupes = db.proprietaires
+      .map((p) => {
+        const biens = db.biens.filter((b) => b.proprietaireId === p.id);
+        const ass = C.associes(p.associes);
+        return `<div class="card" style="margin-top:14px"><div class="row wrap"><div class="ico-page" style="width:44px;height:44px;border-radius:14px;display:grid;place-items:center;font-size:22px;background:var(--surface-2)">${/^sci/.test(p.type || '') ? '🏛️' : '👫'}</div>
+          <div style="flex:1;min-width:180px"><h3>${h(p.nom)}</h3><div class="tiny muted">${h(typeProprio(p))}${p.siren ? ` · SIREN ${h(p.siren)}` : ''}${p.gerant ? ` · gérance : ${h(p.gerant)}` : ''}</div>
+          ${ass.length ? `<div class="chips" style="margin-top:6px">${ass.map((a) => chip('👤 ' + h(a.nom) + (a.pct === null ? '' : ' · ' + pct(a.pct)))).join('')}</div>` : ''}</div>
+          <span class="chip">${biens.length} bien(s)</span>${btnIco('editProprio', p.id, '✏️', 'Modifier')}${btnIco('delProprio', p.id, '🗑️', 'Supprimer', true)}</div>
+          ${biens.length ? `<div class="grid-cartes" style="margin-top:14px">${biens.map(carteBien).join('')}</div>` : ''}</div>`;
+      })
+      .join('');
+    const sansProprio = db.biens.filter((b) => !db.proprietaires.some((p) => p.id === b.proprietaireId));
+    const gests = db.gestionnaires
+      .map((g) => {
+        const nb = db.biens.filter((b) => b.gestionMode === 'agence' && b.gestionnaireId === g.id).length;
+        return `<div class="card"><div class="row"><div class="ico" style="width:40px;height:40px;border-radius:12px;display:grid;place-items:center;background:var(--surface-2);font-size:19px">🤝</div>
+          <div style="flex:1;min-width:0"><h3>${h(g.nom)}</h3><div class="tiny muted">${h(g.contact || '')}</div></div>${btnIco('editGest', g.id, '✏️', 'Modifier')}${btnIco('delGest', g.id, '🗑️', 'Supprimer', true)}</div>
+          <div class="chips" style="margin-top:10px">${chip(`🏠 ${nb} bien(s)`)}${g.honorairesPct ? chip(`💼 ${pct(g.honorairesPct)} des loyers`) : ''}${g.email ? `<a class="chip" href="mailto:${h(g.email)}">✉️ ${h(g.email)}</a>` : ''}${g.telephone ? `<a class="chip" href="tel:${h(String(g.telephone).replace(/[^\d+]/g, ''))}">📞 ${h(g.telephone)}</a>` : ''}</div></div>`;
+      })
+      .join('');
+    return `${enTetePage('🏠', 'Biens', `${db.biens.length} bien(s) · ${db.proprietaires.length} propriétaire(s)`, '<button class="secondary" data-act="editProprio">+ Propriétaire</button><button data-act="editBien">+ Ajouter un bien</button>')}
+      ${db.biens.length ? '' : vide('🏠', 'Aucun bien pour l’instant. Commencez par en ajouter un.')}
+      ${groupes}
+      ${sansProprio.length ? `<div class="grid-3" style="margin-top:14px">${sansProprio.map(carteBien).join('')}</div>` : ''}
+      ${enTeteSection('🤝 Gestionnaires', '<button class="secondary" data-act="editGest">+ Gestionnaire</button>')}
+      ${gests ? `<div class="grid-cartes">${gests}</div>` : vide('🤝', 'Aucun gestionnaire : vos biens sont gérés en direct.')}`;
   };
   actions.editBien = (d) => {
     const b = d.id ? bienById(d.id) : { type: 'appartement', enCopropriete: true, gestionMode: 'direct', proprietaireId: (db.proprietaires[0] || {}).id, gestionnaireId: (db.gestionnaires[0] || {}).id };
@@ -669,29 +810,32 @@
     { name: 'notes', label: 'Notes', type: 'textarea' },
   ];
   views.baux = () => {
-    if (!db.biens.length) return `<h1>Locataires &amp; baux</h1>${needBien()}`;
-    const rows = db.baux
-      .filter((b) => dans(b.bienId))
-      .sort((a, b) => (b.dateDebut || '').localeCompare(a.dateDebut || ''))
-      .map((b) => {
-        const actif = !b.dateFin || b.dateFin >= today();
-        const cond = C.conditionsAu(b, actif ? currentPeriod() : (b.dateFin || currentPeriod()).slice(0, 7));
-        return `<tr><td><b>${h(b.locataire)}</b><div class="small muted">${h(b.email || '')} ${h(b.telephone || '')}</div></td>
-          <td>${h(bienNom(b.bienId))}</td>
-          <td>${dateFr(b.dateDebut)}${b.dateFin ? ' → ' + dateFr(b.dateFin) : ''}<div>${actif ? '<span class="badge st-ok">En cours</span>' : '<span class="badge st-future">Terminé</span>'}</div></td>
-          <td class="num">${eur(cond.loyerHC)}${(b.revisions || []).length ? `<div class="small muted">${b.revisions.length} révision(s)</div>` : ''}</td><td class="num">${eur(cond.provisionCharges)}</td>
-          <td class="num"><b>${eur(cond.loyerHC + cond.provisionCharges)}</b></td>
-          <td class="num">${eur(b.depotGarantie)}</td>
-          <td><button class="link" data-act="editBail" data-id="${b.id}">Modifier</button>
-          <button class="link" data-act="irl" data-id="${b.id}">Révision IRL</button>
-          <button class="link" data-act="revisions" data-id="${b.id}">Historique du loyer</button>
-          <button class="link" data-act="quittanceAnnuelle" data-id="${b.id}">Quittance annuelle</button>
-          <button class="link" data-act="attestationPaiement" data-id="${b.id}">Attestation de paiement</button>
-          <button class="link danger" data-act="delBail" data-id="${b.id}">Supprimer</button></td></tr>`;
-      });
-    return `<div class="toolbar"><h1 style="margin:0">Locataires &amp; baux</h1><span class="spacer"></span>${bienFilter()}<button data-act="editBail">+ Nouveau bail</button></div>
-      ${table(['Locataire', 'Bien', 'Période', { label: 'Loyer HC', cls: 'num' }, { label: 'Provisions', cls: 'num' }, { label: 'Total CC', cls: 'num' }, { label: 'Dépôt', cls: 'num' }, ''], rows)}
-      <p class="small muted">Le premier et le dernier mois sont automatiquement proratisés selon les dates d'entrée et de sortie.</p>`;
+    if (!db.biens.length) return `${enTetePage('👥', 'Locataires')}${needBien()}`;
+    const baux = db.baux.filter((b) => dans(b.bienId)).sort((a, b) => (b.dateDebut || '').localeCompare(a.dateDebut || ''));
+    const carte = (b) => {
+      const actif = !b.dateFin || b.dateFin >= today();
+      const cond = C.conditionsAu(b, actif ? currentPeriod() : (b.dateFin || currentPeriod()).slice(0, 7));
+      const g = gestionnaire(bienById(b.bienId));
+      const paiement = g ? `🤝 via ${h(g.nom.split(' (')[0])}` : b.paiementAuto ? `🔁 ${h(b.paiementAutoMode || 'Virement')} automatique le ${h(b.jourPaiement || 1)}` : `📅 payable le ${h(b.jourPaiement || 5)}`;
+      return `<div class="card bien-card" style="--c:${couleurBien(b.bienId)}"><div class="bandeau-bien"></div><div class="corps">
+        <div class="entete">${avatar(b.locataire, couleurBien(b.bienId))}<div style="min-width:0;flex:1"><h3>${h(b.locataire)}</h3>
+          <div class="chips" style="margin-top:4px">${chip(h(bienNom(b.bienId)), couleurBien(b.bienId))}${actif ? '<span class="badge st-ok">● En cours</span>' : '<span class="badge st-future">Terminé</span>'}</div></div>
+          <div class="row" style="gap:0">${btnIco('irl', b.id, '📈', 'Révision IRL')}${btnIco('revisions', b.id, '🕓', 'Historique du loyer')}${btnIco('editBail', b.id, '✏️', 'Modifier')}${btnIco('delBail', b.id, '🗑️', 'Supprimer', true)}</div></div>
+        <div class="tiny muted">🗓️ ${dateFr(b.dateDebut)}${b.dateFin ? ' → ' + dateFr(b.dateFin) : ' → aujourd’hui'} · ${paiement}</div>
+        <div class="mini-stats"><div><div class="l">Loyer</div><div class="v">${eur(cond.loyerHC)}</div></div><div><div class="l">Charges</div><div class="v">${eur(cond.provisionCharges)}</div></div>
+          <div><div class="l">Total</div><div class="v">${eur(cond.loyerHC + cond.provisionCharges)}</div></div></div>
+        <div class="chips">${b.email ? `<a class="chip" href="mailto:${h(b.email)}">✉️ ${h(b.email)}</a>` : ''}${b.telephone ? `<a class="chip" href="tel:${h(String(b.telephone).replace(/[^\d+]/g, ''))}">📞 ${h(b.telephone)}</a>` : ''}${b.depotGarantie ? chip('🔐 dépôt ' + eur(b.depotGarantie)) : ''}${(b.revisions || []).length ? chip(`📈 ${b.revisions.length} révision(s)`) : ''}</div>
+        <div class="row wrap" style="gap:6px;margin-top:auto">
+          <button class="secondary small" data-act="quittanceAnnuelle" data-id="${b.id}">🧾 Quittance annuelle</button>
+          <button class="secondary small" data-act="attestationPaiement" data-id="${b.id}">📄 Attestation de paiement</button></div>
+      </div></div>`;
+    };
+    const actifs = baux.filter((b) => !b.dateFin || b.dateFin >= today());
+    const anciens = baux.filter((b) => b.dateFin && b.dateFin < today());
+    return `${enTetePage('👥', 'Locataires', `${actifs.length} bail(s) en cours`, `${bienFilter()}<button data-act="editBail">+ Nouveau bail</button>`)}
+      ${actifs.length ? `<div class="grid-cartes">${actifs.map(carte).join('')}</div>` : vide('👥', 'Aucun bail en cours.')}
+      ${anciens.length ? `${enTeteSection('🗂️ Anciens locataires')}<div class="grid-cartes">${anciens.map(carte).join('')}</div>` : ''}
+      <p class="small muted" style="margin-top:16px">ℹ️ Le premier et le dernier mois sont proratisés selon les dates d'entrée et de sortie.</p>`;
   };
   actions.editBail = (d) => {
     const b = d.id ? bailById(d.id) : { bienId: bienDefaut(), typeBail: 'vide', jourPaiement: 5 };
@@ -763,48 +907,75 @@
   };
 
   // ---------- Loyers ----------
+  const ICONES_MODE = { Virement: '🏦', Prélèvement: '🔁', Chèque: '✍️', Espèces: '💵', 'CAF / APL': '🏛️', Agence: '🤝', Autre: '💳' };
+  const badgeNature = (p) =>
+    p.nature === 'regularisation' ? `<span class="badge st-part">Régul. charges ${h(p.regulAnnee || '')}</span> ` : p.nature === 'teom' ? `<span class="badge st-part">TEOM ${h(p.regulAnnee || '')}</span> ` : p.nature === 'divers' ? '<span class="badge st-future">Divers</span> ' : p.nature === 'abandon' ? '<span class="badge st-due">Créance soldée sans paiement</span> ' : '';
   views.loyers = () => {
-    if (!db.baux.length) return `<h1>Loyers</h1>${needBien() || `<div class="card empty">Ajoutez d'abord un <a href="#baux">bail</a>.</div>`}`;
+    if (!db.baux.length) return `${enTetePage('💶', 'Loyers')}${needBien() || vide('👥', `Ajoutez d'abord un <a href="#baux">bail</a>.`)}`;
     const cur = currentPeriod();
-    const baux = db.baux.filter((b) => (dans(b.bienId)) && C.joursOccupes(b, annee) > 0);
-    const rows = baux.map((b) => {
+    const baux = db.baux.filter((b) => dans(b.bienId) && C.joursOccupes(b, annee) > 0);
+    let attendu = 0;
+    let recu = 0;
+    let retard = 0;
+    const cartes = baux.map((b) => {
       const sit = Object.fromEntries(C.situationBail(b, db.paiements, `${annee}-01`, `${annee}-12`).map((e) => [e.periode, e]));
       let total = 0;
       let paye = 0;
-      const cells = MOIS.map((_, i) => {
+      const pastilles = MOIS.map((m, i) => {
         const p = C.periodKey(annee, i + 1);
         const e = sit[p];
-        if (!e) return `<td class="cell"></td>`;
+        if (!e) return `<span class="vide" title="${m} : hors bail"></span>`;
         total += e.du;
-        paye += e.paye;
-        const st = e.reste <= 0.009 ? 'st-ok' : e.paye > 0 ? 'st-part' : p > cur ? 'st-future' : 'st-due';
-        const txt = e.reste <= 0.009 ? '✓ ' + Math.round(e.paye) : e.paye > 0 ? Math.round(e.paye) + '/' + Math.round(e.du) : Math.round(e.du);
-        return `<td class="cell"><button class="${st}" data-act="cellule" data-bail="${b.id}" data-periode="${p}" title="${periodeLabel(p)} — dû ${eur(e.du)}, payé ${eur(e.paye)}">${txt}</button></td>`;
+        paye += Math.min(e.paye, e.du);
+        const echu = echeanceEffective(b, p) <= today();
+        if (echu && e.reste > 0.009) retard += e.reste;
+        const st = e.reste <= 0.009 ? 'st-ok' : e.paye > 0 ? 'st-part' : !echu ? 'st-future' : 'st-due';
+        const sym = e.reste <= 0.009 ? '✓' : e.paye > 0 ? '½' : !echu ? '·' : '!';
+        return `<button class="${st}" data-act="cellule" data-bail="${b.id}" data-periode="${p}" title="${periodeLabel(p)} — dû ${eur(e.du)}, payé ${eur(e.paye)}" aria-label="${periodeLabel(p)} : ${st === 'st-ok' ? 'payé' : st === 'st-part' ? 'partiel' : st === 'st-due' ? 'impayé' : 'à venir'}"><span class="m">${m.slice(0, 3)}</span>${sym}</button>`;
       }).join('');
+      attendu += total;
+      recu += paye;
       const agence = gestionnaire(bienById(b.bienId));
-      return `<tr><td><b>${h(b.locataire)}</b><div class="small muted">${h(bienNom(b.bienId))}</div>${agence ? `<span class="badge st-part" title="Loyers encaissés par le gestionnaire : saisis depuis ses relevés">via ${h(agence.nom)}</span>` : ''}</td>${cells}
-        <td class="num">${eur(paye)}<div class="small muted">/ ${eur(total)}</div></td></tr>`;
+      return `<div class="card" style="--c:${couleurBien(b.bienId)}"><div class="row">${avatar(b.locataire, couleurBien(b.bienId))}<div style="flex:1;min-width:0"><h3>${h(b.locataire)}</h3>
+          <div class="chips" style="margin-top:3px">${chip(h(bienNom(b.bienId)), couleurBien(b.bienId))}${agence ? chip('🤝 via ' + h(agence.nom.split(' (')[0])) : ''}</div></div>
+          <div class="montant" style="text-align:right"><b>${eur(paye)}</b><div class="tiny muted">sur ${eur(total)}</div></div></div>
+        <div style="margin:10px 0 12px">${barre(total ? paye / total : 0, 'ok')}</div>
+        <div class="mois-grille">${pastilles}</div></div>`;
     });
+    // Journal des encaissements, groupé par mois de réception
     const journal = db.paiements
       .filter((p) => (p.periode || '').startsWith(String(annee)))
       .filter((p) => dans((bailById(p.bailId) || {}).bienId))
-      .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+      .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    let dernier = '';
+    const fil = journal
       .map((p) => {
         const b = bailById(p.bailId) || {};
-        const nature = p.nature === 'regularisation' ? `<span class="badge st-part">Régul. charges ${h(p.regulAnnee || '')}</span> ` : p.nature === 'teom' ? `<span class="badge st-part">TEOM ${h(p.regulAnnee || '')}</span> ` : p.nature === 'divers' ? '<span class="badge st-future">Divers</span> ' : p.nature === 'abandon' ? '<span class="badge st-due">Créance soldée sans paiement</span> ' : '';
-        return `<tr><td>${dateFr(p.date)}</td><td>${h(b.locataire || '?')}</td><td>${nature}${periodeLabel(p.periode)}</td><td>${h(p.mode || '')}</td>
-          <td class="num">${eur(p.montant)}</td><td>${h(p.note || '')}</td>
-          <td><button class="link" data-act="editPaiement" data-id="${p.id}">Modifier</button>
-          <button class="link danger" data-act="delPaiement" data-id="${p.id}">Supprimer</button></td></tr>`;
-      });
-    return `<div class="toolbar"><h1 style="margin:0">Loyers ${annee}</h1><span class="spacer"></span>${bienFilter()}
-        <button class="secondary" data-act="encaisserMois">Tout encaisser pour un mois…</button><button data-act="payer">+ Paiement</button></div>
-      <p class="small muted">Cliquez sur un mois pour enregistrer un paiement ou éditer une quittance.
-        <span class="badge st-ok">payé</span> <span class="badge st-part">partiel</span> <span class="badge st-due">impayé</span> <span class="badge st-future">à venir</span></p>
-      <div class="table-wrap grid-loyers"><table><thead><tr><th>Bail</th>${MOIS.map((m) => `<th>${m}</th>`).join('')}<th class="num">Total</th></tr></thead>
-        <tbody>${rows.join('') || `<tr><td colspan="14" class="empty">Aucun bail actif en ${annee}.</td></tr>`}</tbody></table></div>
-      <h2>Journal des encaissements</h2>
-      ${table(['Date', 'Locataire', 'Période', 'Mode', { label: 'Montant', cls: 'num' }, 'Note', ''], journal)}`;
+        const m = (p.date || '').slice(0, 7);
+        const titre = m !== dernier ? `<div class="groupe-date">${m ? periodeLong(m) : 'Sans date'}</div>` : '';
+        dernier = m;
+        return (
+          titre +
+          item({
+            avatarHtml: avatar(b.locataire, couleurBien(b.bienId), 'sm'),
+            t: `${badgeNature(p)}${h(b.locataire || '?')}`,
+            s: `${ICONES_MODE[p.mode] || '💳'} ${h(p.mode || '')} · le ${dateFr(p.date)} · pour ${periodeLabel(p.periode)}${p.note ? ' · ' + h(p.note) : ''}`,
+            montant: p.nature === 'abandon' ? `<span class="muted">${eur(p.montant)}</span>` : `<span class="pos">+${eur(p.montant)}</span>`,
+            acts: btnIco('editPaiement', p.id, '✏️', 'Modifier') + btnIco('delPaiement', p.id, '🗑️', 'Supprimer', true),
+          })
+        );
+      })
+      .join('');
+    return `${enTetePage('💶', `Loyers ${annee}`, 'Touchez un mois pour encaisser, voir le détail ou imprimer une quittance', `${bienFilter()}<button class="secondary" data-act="encaisserMois">Tout encaisser pour un mois…</button><button data-act="payer">+ Paiement</button>`)}
+      <div class="cards">
+        ${tuile('💶', 'Encaissé', eur(recu), `sur ${eur(attendu)} attendus en ${annee}`, 'ok')}
+        ${tuile('⏳', 'À venir', eur(Math.max(attendu - recu - retard, 0)), 'échéances pas encore dues', 'info')}
+        ${tuile(retard > 0.009 ? '⚠️' : '🎉', 'En retard', `<span class="${retard > 0.009 ? 'neg' : 'pos'}">${eur(retard)}</span>`, retard > 0.009 ? 'à relancer' : 'tout est à jour', retard > 0.009 ? 'bad' : 'ok')}
+      </div>
+      <div class="legende" style="margin:16px 0 10px"><span><i class="st-ok" style="background:var(--ok-bg);border:1px solid var(--ok)"></i>✓ payé</span><span><i style="background:var(--warn-bg);border:1px solid var(--warn)"></i>½ partiel</span><span><i style="background:var(--bad-bg);border:1px solid var(--bad)"></i>! en retard</span><span><i style="background:var(--none-bg)"></i>· à venir</span></div>
+      ${cartes.length ? `<div class="grid-cartes">${cartes.join('')}</div>` : vide('🗓️', `Aucun bail actif en ${annee}.`)}
+      ${enTeteSection('🧾 Journal des encaissements', `<span class="chip">${journal.length}</span>`)}
+      <div class="liste">${fil || '<div class="muted small">Aucun encaissement cette année.</div>'}</div>`;
   };
   actions.cellule = (d) => {
     const b = bailById(d.bail);
@@ -1259,32 +1430,54 @@
     { name: 'partRecuperable', label: 'Dont part récupérable (€)', type: 'number', help: 'Refacturable au locataire (décret 87-713) : eau, ascenseur, entretien des parties communes… Pour une taxe foncière : le montant de la TEOM.' },
     { name: 'notes', label: 'Notes', type: 'textarea' },
   ];
+  const ICONES_CAT = { copro: '🏘️', copro_travaux: '🛠️', charges_directes: '💡', taxe_fonciere: '🏛️', assurance_pno: '🛡️', gestion: '🤝', travaux: '🔧', amelioration: '✨', autre: '📌' };
   views.charges = () => {
-    if (!db.biens.length) return `<h1>Charges</h1>${needBien()}`;
+    if (!db.biens.length) return `${enTetePage('🧾', 'Charges')}${needBien()}`;
     const list = db.charges
-      .filter((c) => (c.date || '').startsWith(String(annee)) && (dans(c.bienId)))
-      .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-    let tot = 0;
-    let rec = 0;
-    const rows = list.map((c) => {
-      tot += Number(c.montant) || 0;
-      rec += Number(c.partRecuperable) || 0;
-      return `<tr><td>${dateFr(c.date)}</td><td>${h(bienNom(c.bienId))}</td><td>${h(catLabel(c.categorie))}</td><td>${h(c.libelle)}</td>
-        <td class="num">${eur(c.montant)}</td><td class="num">${eur(c.partRecuperable)}</td>
-        <td class="num">${eur((Number(c.montant) || 0) - (Number(c.partRecuperable) || 0))}</td>
-        <td><button class="link" data-act="editCharge" data-id="${c.id}">Modifier</button>
-        <button class="link" data-act="dupCharge" data-id="${c.id}">Dupliquer</button>
-        <button class="link danger" data-act="delCharge" data-id="${c.id}">Supprimer</button></td></tr>`;
-    });
-    const foot = `<tr><td colspan="4">Total ${annee}</td><td class="num">${eur(tot)}</td><td class="num">${eur(rec)}</td><td class="num">${eur(tot - rec)}</td><td></td></tr>`;
-
+      .filter((c) => (c.date || '').startsWith(String(annee)) && dans(c.bienId))
+      .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    const tot = list.reduce((t, c) => t + (Number(c.montant) || 0), 0);
+    const rec = list.reduce((t, c) => t + (Number(c.partRecuperable) || 0), 0);
     const parCat = {};
     for (const c of list) parCat[c.categorie] = (parCat[c.categorie] || 0) + (Number(c.montant) || 0);
-    return `<div class="toolbar"><h1 style="margin:0">Charges ${annee}</h1><span class="spacer"></span>${bienFilter()}
-        ${db.biens.some((b) => b.enCopropriete) ? '<button class="secondary" data-act="appelsFonds">Générer les appels de fonds…</button>' : ''}<button data-act="editCharge">+ Charge</button></div>
-      ${table(['Date', 'Bien', 'Catégorie', 'Libellé', { label: 'Montant', cls: 'num' }, { label: 'Récupérable', cls: 'num' }, { label: 'À ma charge', cls: 'num' }, ''], rows, rows.length ? foot : '')}
-      ${Object.keys(parCat).length ? `<div class="cards" style="margin-top:12px">${Object.entries(parCat).map(([k, v]) => `<div class="card kpi"><div class="label">${h(catLabel(k))}</div><div class="value" style="font-size:17px">${eur(v)}</div></div>`).join('')}</div>` : ''}
-      <p class="small muted" style="margin-top:12px">La régularisation des charges et le remboursement de la TEOM se font dans l'onglet <a href="#regularisation">Régularisation</a>.</p>`;
+    const maxCat = Math.max(...Object.values(parCat).map(Math.abs), 1);
+    const repartition = Object.entries(parCat)
+      .sort((a, b) => b[1] - a[1])
+      .map(
+        ([k, v]) => `<div><div class="between small"><span>${ICONES_CAT[k] || '📌'} ${h(catLabel(k))}</span><b>${eur(v)}</b></div>${barre(Math.abs(v) / maxCat)}</div>`
+      )
+      .join('');
+    let dernier = '';
+    const fil = list
+      .map((c) => {
+        const m = (c.date || '').slice(0, 7);
+        const titre = m !== dernier ? `<div class="groupe-date">${m ? periodeLong(m) : 'Sans date'}</div>` : '';
+        dernier = m;
+        const r = Number(c.partRecuperable) || 0;
+        return (
+          titre +
+          item({
+            ico: ICONES_CAT[c.categorie] || '📌',
+            t: h(c.libelle),
+            s: `${chip(h(bienNom(c.bienId)), couleurBien(c.bienId))} ${h(catLabel(c.categorie))} · ${dateFr(c.date)}`,
+            montant: eur(c.montant),
+            montantSub: r ? `dont ${eur(r)} récupérables` : '',
+            acts: btnIco('editCharge', c.id, '✏️', 'Modifier') + btnIco('dupCharge', c.id, '⧉', 'Dupliquer') + btnIco('delCharge', c.id, '🗑️', 'Supprimer', true),
+          })
+        );
+      })
+      .join('');
+    return `${enTetePage('🧾', `Charges ${annee}`, 'Appels de fonds, taxes, assurances, honoraires, travaux', `${bienFilter()}${db.biens.some((b) => b.enCopropriete) ? '<button class="secondary" data-act="appelsFonds">Générer les appels de fonds…</button>' : ''}<button data-act="editCharge">+ Charge</button>`)}
+      <div class="cards">
+        ${tuile('🧾', 'Total payé', eur(tot), `${list.length} opération(s)`, 'warn')}
+        ${tuile('↩️', 'Récupérable', eur(rec), 'refacturé aux locataires', 'ok')}
+        ${tuile('👛', 'À votre charge', eur(tot - rec), 'déductible en grande partie', 'info')}
+      </div>
+      <div class="grid-2" style="margin-top:14px">
+        <div class="card"><h3>📊 Répartition</h3><div class="stack" style="margin-top:12px">${repartition || '<div class="muted small">Aucune charge.</div>'}</div>
+          <p class="tiny muted" style="margin:14px 0 0">⚖️ La régularisation des charges et de la TEOM se fait dans l'onglet <a href="#regularisation">Régularisation</a>.</p></div>
+        <div><div class="liste">${fil || vide('🧾', `Aucune charge en ${annee}.`)}</div></div>
+      </div>`;
   };
   actions.editCharge = (d) => {
     const bienId = bienDefaut();
@@ -1353,55 +1546,59 @@
     n > 0.005 ? `<span class="neg">${eur(n)}</span><div class="small muted">dû par le locataire</div>` : n < -0.005 ? `<span class="pos">${eur(-n)}</span><div class="small muted">à lui rembourser</div>` : eur(0);
 
   views.regularisation = () => {
-    if (!db.baux.length) return `<h1>Régularisation</h1>${needBien() || `<div class="card empty">Ajoutez d'abord un <a href="#baux">bail</a>.</div>`}`;
+    if (!db.baux.length) return `${enTetePage('⚖️', 'Régularisation')}${needBien() || vide('👥', `Ajoutez d'abord un <a href="#baux">bail</a>.`)}`;
     const baux = db.baux.filter((b) => dans(b.bienId) && C.joursOccupes(b, annee) > 0);
     let totCharges = 0;
     let totTeom = 0;
     let totReste = 0;
-    const rows = baux.map((b) => {
+    const montantSens = (n) => (n > 0.005 ? `<span class="neg">${eur(n)}</span>` : n < -0.005 ? `<span class="pos">${eur(-n)}</span>` : eur(0));
+    const libSens = (n) => (n > 0.005 ? 'à demander au locataire' : n < -0.005 ? 'à rembourser au locataire' : 'rien à régulariser');
+    const cartes = baux.map((b) => {
       const r = C.regularisationComplete(db, b, annee);
       const bien = bienById(b.bienId) || {};
       totCharges += r.charges.solde;
       totTeom += r.teom.montant;
       totReste += r.reste;
       const src =
-        r.charges.source === 'decompte'
-          ? '<span class="badge st-ok" title="Charges réelles approuvées">décompte syndic</span>'
-          : bien.enCopropriete
-            ? '<span class="badge st-part" title="Aucun décompte du syndic saisi pour cet exercice : estimation à partir des appels de fonds">estimation (appels)</span>'
-            : '<span class="badge st-future">charges payées en direct</span>';
+        r.charges.source === 'decompte' ? chip('✅ décompte du syndic') : bien.enCopropriete ? chip('🔮 estimation (appels de fonds)') : chip('💡 charges payées en direct');
       const agence = gestionnaire(bien);
-      return `<tr><td><b>${h(b.locataire)}</b><div class="small muted">${h(bien.nom || '')}${agence ? ` · géré par ${h(agence.nom)}` : ''}</div></td>
-        <td>${src}<div class="small muted">${r.charges.jours} j · récup. ${eur(r.charges.chargesRecuperables)} − prov. ${eur(r.charges.provisions)}</div></td>
-        <td class="num">${sensMontant(r.charges.solde)}</td>
-        <td class="num">${r.teom.avisSaisi ? eur(r.teom.montant) : '<span class="small muted">avis de taxe foncière non saisi</span>'}<div class="small muted">${r.teom.avisSaisi ? `${eur(r.teom.teomBien)} × ${r.teom.jours} j` : ''}</div></td>
-        <td class="num"><b>${sensMontant(r.total)}</b>${r.dejaCharges || r.dejaTeom ? `<div class="small muted">déjà réglé ${eur(r.dejaCharges + r.dejaTeom)}</div>` : ''}</td>
-        <td>${statutRegul(r)}</td>
-        <td><button class="link" data-act="decompte" data-id="${b.id}">🖨 Décompte</button>
-        ${Math.abs(r.reste) >= 0.01 ? `<button class="link" data-act="enregRegul" data-id="${b.id}">Enregistrer le règlement</button>` : ''}</td></tr>`;
+      return `<div class="card bien-card" style="--c:${couleurBien(b.bienId)}"><div class="bandeau-bien"></div><div class="corps">
+        <div class="entete">${avatar(b.locataire, couleurBien(b.bienId))}<div style="flex:1;min-width:0"><h3>${h(b.locataire)}</h3>
+          <div class="chips" style="margin-top:4px">${chip(h(bien.nom || ''), couleurBien(b.bienId))}${agence ? chip('🤝 ' + h(agence.nom.split(' (')[0])) : ''}</div></div>${statutRegul(r)}</div>
+        <div class="hero" style="grid-template-columns:1fr;gap:2px"><div class="tiny muted">${libSens(r.total)}</div><div class="big" style="font-size:28px">${montantSens(r.total)}</div>
+          ${r.dejaCharges || r.dejaTeom ? `<div class="tiny muted">déjà réglé : ${eur(r.dejaCharges + r.dejaTeom)} · reste ${eur(r.reste)}</div>` : ''}</div>
+        <div class="mini-stats"><div><div class="l">🧾 Charges</div><div class="v">${montantSens(r.charges.solde)}</div></div>
+          <div><div class="l">🗑️ Ordures (TEOM)</div><div class="v">${r.teom.avisSaisi ? eur(r.teom.montant) : '<span class="tiny muted">avis non saisi</span>'}</div></div></div>
+        <div class="tiny muted">${src} ${r.charges.jours} jours · récupérable ${eur(r.charges.chargesRecuperables)} − provisions ${eur(r.charges.provisions)}${r.teom.avisSaisi ? ` · TEOM ${eur(r.teom.teomBien)} × ${r.teom.jours} j` : ''}</div>
+        <div class="row wrap" style="gap:6px;margin-top:auto"><button class="secondary" data-act="decompte" data-id="${b.id}">🖨 Décompte</button>
+          ${Math.abs(r.reste) >= 0.01 ? `<button data-act="enregRegul" data-id="${b.id}">✔ Enregistrer le règlement</button>` : ''}</div>
+      </div></div>`;
     });
-    const foot = rows.length
-      ? `<tr><td colspan="2">Total ${annee}</td><td class="num">${eur(totCharges)}</td><td class="num">${eur(totTeom)}</td><td class="num">${eur(totCharges + totTeom)}</td><td colspan="2">reste ${eur(totReste)}</td></tr>`
-      : '';
     const decs = db.decomptes
       .filter((x) => dans(x.bienId))
       .sort((a, b) => (b.exerciceFin || '').localeCompare(a.exerciceFin || ''))
-      .map(
-        (x) => `<tr><td>${h(bienNom(x.bienId))}</td><td>${dateFr(x.exerciceDebut)} → ${dateFr(x.exerciceFin)}</td><td class="num">${x.chargesTotales !== '' && x.chargesTotales !== undefined ? eur(x.chargesTotales) : '—'}</td>
-          <td class="num">${eur(x.chargesRecuperables)}</td><td>${dateFr(x.dateApprobation)}</td>
-          <td><button class="link" data-act="editDecompte" data-id="${x.id}">Modifier</button><button class="link danger" data-act="delDecompte" data-id="${x.id}">Supprimer</button></td></tr>`
+      .map((x) =>
+        item({
+          ico: '📑',
+          t: `${h(bienNom(x.bienId))} — exercice ${dateFr(x.exerciceDebut)} → ${dateFr(x.exerciceFin)}`,
+          s: `charges du lot ${x.chargesTotales !== '' && x.chargesTotales !== undefined ? eur(x.chargesTotales) : '—'}${x.dateApprobation ? ` · AG / décompte du ${dateFr(x.dateApprobation)}` : ''}`,
+          montant: eur(x.chargesRecuperables),
+          montantSub: 'récupérables',
+          acts: btnIco('editDecompte', x.id, '✏️', 'Modifier') + btnIco('delDecompte', x.id, '🗑️', 'Supprimer', true),
+        })
       );
     const sansAvis = baux.filter((b) => !C.teom(b, db.charges, annee).avisSaisi).map((b) => bienNom(b.bienId));
-    return `<div class="toolbar"><h1 style="margin:0">Régularisation ${annee}</h1><span class="spacer"></span>${bienFilter()}
-        ${db.biens.some((b) => b.enCopropriete) ? '<button class="secondary" data-act="editDecompte">+ Décompte du syndic</button>' : ''}
-        <button class="secondary" data-act="avisTF">+ Avis de taxe foncière</button></div>
-      <p class="small muted">Pour chaque locataire : régularisation des <b>charges récupérables</b> (réelles − provisions versées, au prorata de l'occupation) et remboursement de la
-        <b>taxe d'enlèvement des ordures ménagères</b> de l'année (au prorata de l'occupation). Les charges d'un exercice se régularisent une fois les comptes approuvés en AG.</p>
-      ${table(['Locataire', 'Base des charges', { label: 'Solde charges', cls: 'num' }, { label: 'TEOM', cls: 'num' }, { label: 'Total', cls: 'num' }, 'Statut', ''], rows, foot)}
-      ${sansAvis.length ? `<p class="small muted">⚠ Avis de taxe foncière ${annee} non saisi pour : ${[...new Set(sansAvis)].map(h).join(', ')}. Saisissez-le avec le montant de la TEOM qui y figure.</p>` : ''}
-      <h2>Décomptes annuels du syndic</h2>
-      ${table(['Bien', 'Exercice', { label: 'Charges du lot', cls: 'num' }, { label: 'Récupérables', cls: 'num' }, 'AG / décompte', ''], decs)}
-      <p class="small muted">Un décompte est utilisé pour la régularisation de l'année où se termine son exercice. Sans décompte, l'outil estime à partir des parts récupérables des appels de fonds.</p>`;
+    return `${enTetePage('⚖️', `Régularisation ${annee}`, 'Charges récupérables et taxe d’ordures ménagères, au prorata de l’occupation', `${bienFilter()}${db.biens.some((b) => b.enCopropriete) ? '<button class="secondary" data-act="editDecompte">+ Décompte du syndic</button>' : ''}<button class="secondary" data-act="avisTF">+ Avis de taxe foncière</button>`)}
+      <div class="cards">
+        ${tuile('🧾', 'Solde des charges', montantSens(totCharges), libSens(totCharges), 'warn')}
+        ${tuile('🗑️', 'TEOM à refacturer', eur(totTeom), 'taxe d’ordures ménagères', 'info')}
+        ${tuile(Math.abs(totReste) < 0.01 ? '🎉' : '📬', 'Reste à régler', montantSens(totReste), Math.abs(totReste) < 0.01 ? 'tout est réglé' : 'après les règlements déjà reçus', Math.abs(totReste) < 0.01 ? 'ok' : 'bad')}
+      </div>
+      ${sansAvis.length ? `<div class="item" style="margin-top:12px"><div class="ico">⚠️</div><div class="txt"><div class="t">Avis de taxe foncière ${annee} non saisi</div><div class="s">${[...new Set(sansAvis)].map(h).join(', ')} : saisissez-le avec le montant de TEOM qui y figure.</div></div></div>` : ''}
+      <div class="grid-cartes" style="margin-top:14px">${cartes.join('') || vide('⚖️', `Aucun bail en ${annee}.`)}</div>
+      ${enTeteSection('📑 Décomptes annuels du syndic', `<span class="chip">${decs.length}</span>`)}
+      <div class="liste">${decs.join('') || '<div class="muted small">Aucun décompte saisi.</div>'}</div>
+      <p class="tiny muted">ℹ️ Un décompte sert à la régularisation de l'année où se termine son exercice. Sans décompte, l'outil estime à partir des parts récupérables des appels de fonds.</p>`;
   };
 
   actions.editDecompte = (d) => {
@@ -1506,23 +1703,34 @@
   ];
   let pretOuvert = null;
   views.prets = () => {
-    if (!db.biens.length) return `<h1>Prêts</h1>${needBien()}`;
+    if (!db.biens.length) return `${enTetePage('🏦', 'Prêts')}${needBien()}`;
     const t = today();
     const prets = db.prets.filter((p) => dans(p.bienId));
-    const rows = prets.map((p) => {
+    let totCrd = 0;
+    let totMens = 0;
+    let totInt = 0;
+    const cartes = prets.map((p) => {
       const tab = C.amortissement(p);
-      const m = tab.find((l) => l.capital > 0) || tab[0] || { total: 0 };
+      const m = tab.find((l) => l.date > t) || tab[tab.length - 1] || { total: 0 };
       const fin = tab.length ? tab[tab.length - 1].date : '';
       const a = C.pretAnnee(p, annee);
+      const crd = C.crdAu(p, t);
+      const rembourse = p.capital ? 1 - crd / p.capital : 0;
       const coutTotal = tab.reduce((s, l) => s + l.interets + l.assurance, 0) + (Number(p.fraisDossier) || 0);
-      return `<tr><td><b>${h(p.libelle || 'Prêt')}</b><div class="small muted">${h(p.banque || '')} — ${h(bienNom(p.bienId))}</div></td>
-        <td class="num">${eur(p.capital)}<div class="small muted">${pct(p.tauxAnnuel)} · ${Math.round(p.dureeMois / 12 * 10) / 10} ans</div>${(p.echeancier || []).length ? `<div class="small muted">échéancier de la banque (${p.echeancier.length} échéances)</div>` : ''}</td>
-        <td class="num">${eur(m.total)}</td><td class="num">${eur(C.crdAu(p, t))}</td>
-        <td class="num">${eur(a.interets)}<div class="small muted">+ ${eur(a.assurance)} ass.</div></td>
-        <td class="num">${eur(coutTotal)}</td><td>${dateFr(fin)}</td>
-        <td><button class="link" data-act="voirPret" data-id="${p.id}">Tableau</button>
-        <button class="link" data-act="editPret" data-id="${p.id}">Modifier</button>
-        <button class="link danger" data-act="delPret" data-id="${p.id}">Supprimer</button></td></tr>`;
+      const restants = tab.filter((l) => l.date > t).length;
+      totCrd += crd;
+      totMens += m.total;
+      totInt += a.interets;
+      return `<div class="card bien-card" style="--c:${couleurBien(p.bienId)}"><div class="bandeau-bien"></div><div class="corps">
+        <div class="entete"><div class="pastille" aria-hidden="true">🏦</div><div style="flex:1;min-width:0"><h3>${h(bienNom(p.bienId))}</h3><div class="tiny muted">${h(p.banque || '')}${p.libelle ? ' · ' + h(p.libelle) : ''}</div></div>
+          ${btnIco('editPret', p.id, '✏️', 'Modifier')}${btnIco('delPret', p.id, '🗑️', 'Supprimer', true)}</div>
+        <div class="hero" style="gap:16px">${anneau(rembourse, `<div><b>${Math.round(rembourse * 100)} %</b><span class="tiny muted">remboursé</span></div>`, 'ok')}
+          <div><div class="tiny muted">Reste à rembourser</div><div class="big" style="font-size:26px">${eur(crd)}</div><div class="tiny muted">sur ${eur(p.capital)} · ${restants} mensualités · fin ${dateFr(fin)}</div></div></div>
+        <div class="mini-stats"><div><div class="l">Mensualité</div><div class="v">${eur(m.total)}</div></div><div><div class="l">Taux</div><div class="v">${pct(p.tauxAnnuel)}</div></div>
+          <div><div class="l">Intérêts ${annee}</div><div class="v">${eur(a.interets)}</div></div></div>
+        <div class="chips">${chip('💰 coût total ' + eur(coutTotal))}${chip('🛡️ assurance ' + eur(a.assurance) + ' en ' + annee)}${(p.echeancier || []).length ? chip('📑 échéancier de la banque') : ''}</div>
+        <div class="row wrap" style="gap:6px;margin-top:auto"><button class="secondary" data-act="voirPret" data-id="${p.id}">📈 Tableau d'amortissement</button></div>
+      </div></div>`;
     });
     let detail = '';
     const po = db.prets.find((p) => p.id === pretOuvert);
@@ -1538,15 +1746,26 @@
         a.total += l.total;
         a.crd = l.crd;
       }
-      const lignesAn = Object.entries(parAn).map(([y, a]) => `<tr${Number(y) === annee ? ' style="font-weight:700"' : ''}><td>${y}</td><td class="num">${eur(a.total)}</td><td class="num">${eur(a.capital)}</td><td class="num">${eur(a.interets)}</td><td class="num">${eur(a.assurance)}</td><td class="num">${eur(a.crd)}</td></tr>`);
+      const maxAn = Math.max(...Object.values(parAn).map((a) => a.total), 1);
+      const annees = Object.entries(parAn)
+        .map(
+          ([y, a]) => `<div class="item"${Number(y) === annee ? ' style="border-color:var(--accent)"' : ''}><div class="ico"><b style="font-size:12px">${y}</b></div><div class="txt">
+            <div style="display:flex;height:10px;border-radius:99px;overflow:hidden;background:var(--surface-2);width:${(a.total / maxAn) * 100}%" title="capital ${eur(a.capital)} · intérêts ${eur(a.interets)} · assurance ${eur(a.assurance)}">
+              <span style="width:${(a.capital / a.total) * 100}%;background:var(--s1)"></span><span style="width:${(a.interets / a.total) * 100}%;background:var(--s2);margin-left:2px"></span><span style="flex:1;background:var(--s4);margin-left:2px"></span></div>
+            <div class="s" style="margin-top:4px">capital ${eur(a.capital)} · intérêts ${eur(a.interets)} · assurance ${eur(a.assurance)}</div></div>
+            <div class="montant">${eur(a.total)}<div class="s">reste ${eur(a.crd)}</div></div></div>`
+        )
+        .join('');
       const lignes = tab.map((l) => `<tr${l.date <= t ? ' class="muted"' : ''}><td>${l.n}</td><td>${dateFr(l.date)}</td><td class="num">${eur(l.total)}</td><td class="num">${eur(l.capital)}</td><td class="num">${eur(l.interets)}</td><td class="num">${eur(l.assurance)}</td><td class="num">${eur(l.crd)}</td></tr>`);
-      detail = `<h2>Tableau d'amortissement — ${h(po.libelle || 'Prêt')} <button class="link" data-act="csvPret" data-id="${po.id}">Exporter CSV</button></h2>
-        ${table(['Année', { label: 'Échéances', cls: 'num' }, { label: 'Capital', cls: 'num' }, { label: 'Intérêts', cls: 'num' }, { label: 'Assurance', cls: 'num' }, { label: 'CRD fin', cls: 'num' }], lignesAn)}
+      detail = `${enTeteSection(`📈 Amortissement — ${h(bienNom(po.bienId))}`, `<button class="secondary" data-act="csvPret" data-id="${po.id}">⬇ Exporter CSV</button>`)}
+        <div class="legende" style="margin-bottom:8px"><span><i style="background:var(--s1)"></i>capital</span><span><i style="background:var(--s2)"></i>intérêts</span><span><i style="background:var(--s4)"></i>assurance</span></div>
+        <div class="liste">${annees}</div>
         <details><summary>Détail mensuel (${tab.length} échéances)</summary>
         ${table(['N°', 'Date', { label: 'Échéance', cls: 'num' }, { label: 'Capital', cls: 'num' }, { label: 'Intérêts', cls: 'num' }, { label: 'Assurance', cls: 'num' }, { label: 'CRD', cls: 'num' }], lignes)}</details>`;
     }
-    return `<div class="toolbar"><h1 style="margin:0">Prêts</h1><span class="spacer"></span>${bienFilter()}<button data-act="editPret">+ Nouveau prêt</button></div>
-      ${table(['Prêt', { label: 'Capital', cls: 'num' }, { label: 'Mensualité', cls: 'num' }, { label: "CRD aujourd'hui", cls: 'num' }, { label: `Intérêts ${annee}`, cls: 'num' }, { label: 'Coût total', cls: 'num' }, 'Fin', ''], rows)}
+    return `${enTetePage('🏦', 'Prêts', `${prets.length} prêt(s) en cours`, `${bienFilter()}<button data-act="editPret">+ Nouveau prêt</button>`)}
+      ${prets.length ? `<div class="cards">${tuile('🏦', 'Reste à rembourser', eur(totCrd), 'tous prêts confondus', 'info')}${tuile('📆', 'Mensualités', eur(totMens), 'par mois, assurance comprise', 'warn')}${tuile('📉', `Intérêts ${annee}`, eur(totInt), 'déductibles des revenus', 'ok')}</div>` : ''}
+      <div class="grid-cartes" style="margin-top:14px">${cartes.join('') || vide('🏦', 'Aucun prêt enregistré.')}</div>
       ${detail}`;
   };
   actions.editPret = (d) => {
@@ -1588,6 +1807,7 @@
     agence: 'Agence immobilière',
     autre: 'Autre',
   };
+  const ICONES_ROLE = { syndic: '🏘️', gestionnaire: '🤝', locataire: '👤', banque: '🏦', notaire: '⚖️', assurance: '🛡️', promoteur: '🏗️', artisan: '🔧', administration: '🏛️', agence: '🏷️', autre: '📌' };
   const champsContact = () => [
     { name: 'nom', label: 'Nom', required: true, help: 'Personne ou service (ex. : Mathieu MOULIN, Service syndic)' },
     { name: 'organisme', label: 'Organisme', help: 'Ex. : Pichet ADB, Crédit Mutuel' },
@@ -1609,24 +1829,26 @@
       .sort((a, b) => (a.organisme || a.nom).localeCompare(b.organisme || b.nom, 'fr') || a.nom.localeCompare(b.nom, 'fr'));
     const groupes = {};
     for (const c of liste) (groupes[c.role || 'autre'] = groupes[c.role || 'autre'] || []).push(c);
-    const tel = (t) => (t ? `<a href="tel:${h(String(t).replace(/[^\d+]/g, ''))}">${h(t)}</a>` : '');
-    const sections = Object.keys(ROLES_CONTACT)
+    const tel = (t) => String(t || '').replace(/[^\d+]/g, '');
+    const roles = Object.keys(ROLES_CONTACT);
+    const sections = roles
       .filter((r) => groupes[r])
       .map(
-        (r) => `<h2>${h(ROLES_CONTACT[r])} (${groupes[r].length})</h2>${table(
-          ['Contact', 'Coordonnées', 'Biens', ''],
-          groupes[r].map(
-            (c) => `<tr><td><b>${h(c.nom)}</b>${c.organisme ? `<div>${h(c.organisme)}</div>` : ''}${c.fonction ? `<div class="small muted">${h(c.fonction)}</div>` : ''}</td>
-              <td class="small">${c.email ? `<a href="mailto:${h(c.email)}">${h(c.email)}</a><br>` : ''}${tel(c.telephone)}${c.adresse ? `<div class="muted">${h(c.adresse).replace(/\n/g, '<br>')}</div>` : ''}</td>
-              <td class="small">${h(c.biens || '—')}${c.notes ? `<div class="muted">${h(c.notes)}</div>` : ''}</td>
-              <td><button class="link" data-act="editContact" data-id="${c.id}">Modifier</button><button class="link danger" data-act="delContact" data-id="${c.id}">Supprimer</button></td></tr>`
+        (r) => `${enTeteSection(`${ICONES_ROLE[r] || '👤'} ${h(ROLES_CONTACT[r])} <span class="chip">${groupes[r].length}</span>`)}<div class="grid-cartes">${groupes[r]
+          .map(
+            (c) => `<div class="card"><div class="row">${avatar(c.nom, `var(--s${(roles.indexOf(r) % 8) + 1})`)}<div style="flex:1;min-width:0"><h3>${h(c.nom)}</h3>
+              <div class="tiny muted">${[c.organisme, c.fonction].filter(Boolean).map(h).join(' · ')}</div></div>${btnIco('editContact', c.id, '✏️', 'Modifier')}${btnIco('delContact', c.id, '🗑️', 'Supprimer', true)}</div>
+              <div class="chips" style="margin-top:10px">${c.email ? `<a class="chip" href="mailto:${h(c.email)}">✉️ ${h(c.email)}</a>` : ''}${c.telephone ? `<a class="chip" href="tel:${h(tel(c.telephone))}">📞 ${h(c.telephone)}</a>` : ''}</div>
+              ${c.biens ? `<div class="chips" style="margin-top:6px">${c.biens.split(/\s*,\s*/).filter(Boolean).map((x) => { const bien = db.biens.find((y) => y.nom === x); return chip('🏠 ' + h(x), bien ? couleurBien(bien.id) : ''); }).join('')}</div>` : ''}
+              ${c.notes ? `<div class="tiny muted" style="margin-top:8px">📝 ${h(c.notes)}</div>` : ''}
+              ${c.adresse ? `<div class="tiny muted" style="margin-top:4px">📍 ${h(c.adresse).replace(/\n/g, ', ')}</div>` : ''}</div>`
           )
-        )}`
+          .join('')}</div>`
       )
       .join('');
-    return `<div class="toolbar"><h1 style="margin:0">Contacts</h1><span class="spacer"></span>${bienFilter()}<button data-act="editContact">+ Contact</button></div>
-      <input type="search" id="recherche-contact" placeholder="Rechercher un nom, un organisme, un e-mail…" value="${h(rechercheContact)}" style="margin-bottom:8px">
-      ${sections || '<div class="card empty">Aucun contact.</div>'}`;
+    return `${enTetePage('📇', 'Contacts', `${liste.length} contact(s)`, `${bienFilter()}<button data-act="editContact">+ Contact</button>`)}
+      <input type="search" id="recherche-contact" placeholder="🔎 Rechercher un nom, un organisme, un e-mail…" value="${h(rechercheContact)}">
+      ${sections || vide('📇', 'Aucun contact.')}`;
   };
   el.addEventListener('input', (e) => {
     if (e.target.id !== 'recherche-contact') return;
@@ -1651,7 +1873,7 @@
   // ---------- Fiscalité ----------
   // Une section par propriétaire : nom propre (2044), SCI à l'IR (2072, puis quote-part de chaque associé), SCI à l'IS.
   views.fiscalite = () => {
-    if (!db.biens.length) return `<h1>Fiscalité</h1>${needBien()}`;
+    if (!db.biens.length) return `${enTetePage('🧮', 'Fiscalité')}${needBien()}`;
     const biens = db.biens.filter((b) => dans(b.id));
     const catTot = (bienIds, cats) =>
       db.charges
@@ -1680,13 +1902,23 @@
         ["Intérêts d'emprunt", -tot.pretInterets, '250'],
         ['Assurance emprunteur', -tot.pretAssurance, '250'],
       ].filter(Boolean);
-      const rows = l.map(([lab, v, ligne]) => `<tr><td>${lab}</td>${perso ? `<td class="muted">${ligne}</td>` : ''}<td class="num">${eur(v)}</td></tr>`);
-      const foot = `<tr><td>Résultat foncier estimé</td>${perso ? '<td></td>' : ''}<td class="num">${signed(tot.resultatFoncier)}</td></tr>`;
+      const icoPoste = ['💶', '📎', '🤝', '🛡️', '🔧', '🏘️', '🏛️', '🏦', '🛡️'];
+      const maxV = Math.max(...l.map(([, v]) => Math.abs(v)), 1);
+      const postes = l
+        .map(([lab, v, ligne], i) =>
+          item({
+            ico: perso ? icoPoste[i] : icoPoste[i + (i >= 1 ? 1 : 0)],
+            t: lab,
+            s: `${perso ? `ligne ${ligne} · ` : ''}<span style="display:inline-block;vertical-align:middle;width:120px">${barre(Math.abs(v) / maxV, v >= 0 ? 'ok' : 'warn')}</span>`,
+            montant: v > 0.005 ? `<span class="pos">${eur(v)}</span>` : eur(v),
+          })
+        )
+        .join('');
       const ass = C.associes(p.associes);
       const decl = (C.TYPES_PROPRIETAIRE[p.type] || C.TYPES_PROPRIETAIRE.perso).declaration;
       let note = '';
       if (p.type === 'sci_is') {
-        note = `<div class="card" style="border-color:var(--warn);margin-top:8px"><b>SCI à l'IS</b> : le résultat imposable se calcule en comptabilité commerciale (amortissement du bien, des frais d'acquisition…). Le tableau ci-dessous n'est qu'une base de travail pour votre expert-comptable.</div>`;
+        note = `<div class="item" style="margin-top:10px;border-color:var(--warn-mark)"><div class="ico">💼</div><div class="txt small"><b>SCI à l'IS</b> : le résultat imposable se calcule en comptabilité commerciale (amortissement du bien, des frais d'acquisition…). Ce récapitulatif n'est qu'une base de travail pour votre expert-comptable.</div></div>`;
       } else if (p.type === 'sci_ir' || p.type === 'indivision') {
         note = ass.length && ass.every((a) => a.pct !== null)
           ? `<div class="small" style="margin-top:8px"><b>Quote-part de chaque ${p.type === 'indivision' ? 'indivisaire' : 'associé'}</b> (à reporter sur sa 2044) : ${ass.map((a) => `${h(a.nom)} ${pct(a.pct)} → ${signed(C.round2((tot.resultatFoncier * a.pct) / 100))}`).join(' · ')}</div>`
@@ -1694,14 +1926,15 @@
       } else {
         note = `<div class="small muted" style="margin-top:8px">Micro-foncier (si recettes foncières totales du foyer ≤ 15 000 €) : base imposable ${eur(tot.revenusBruts * 0.7)} après abattement de 30 %.</div>`;
       }
-      return `<div class="card" style="margin-top:12px"><h2 style="margin-top:0">${h(p.nom)}</h2>
-        <p class="small muted">${h(typeProprio(p) || '')} — déclaration ${h(decl)} — ${bs.map((b) => h(b.nom)).join(', ')}</p>
-        ${table(perso ? ['Poste', 'Ligne 2044', { label: 'Montant', cls: 'num' }] : ['Poste', { label: 'Montant', cls: 'num' }], rows, foot)}
+      return `<div class="card" style="margin-top:14px"><div class="row wrap"><div class="ico-page" style="width:44px;height:44px;border-radius:14px;display:grid;place-items:center;font-size:22px;background:var(--surface-2)">${perso ? '👫' : '🏛️'}</div>
+          <div style="flex:1;min-width:200px"><h3>${h(p.nom)}</h3><div class="chips" style="margin-top:4px">${chip(h(typeProprio(p) || ''))}${chip('📄 ' + h(decl))}${bs.map((b) => chip(h(b.nom), couleurBien(b.id))).join('')}</div></div>
+          <div style="text-align:right"><div class="tiny muted">Résultat foncier estimé</div><div class="big" style="font-size:28px;font-weight:800">${signed(tot.resultatFoncier)}</div></div></div>
+        <div class="liste" style="margin-top:14px">${postes}</div>
         ${note}
         ${tot.resultatFoncier < 0 && p.type !== 'sci_is' ? '<p class="small muted">Déficit foncier : imputable sur le revenu global dans la limite de 10 700 € par an (hors intérêts d’emprunt), le surplus est reportable 10 ans sur les revenus fonciers.</p>' : ''}</div>`;
     });
-    return `<div class="toolbar"><h1 style="margin:0">Revenus fonciers ${annee}</h1><span class="spacer"></span>${bienFilter()}</div>
-      <p class="small muted">Estimation indicative (location nue, régime réel), par propriétaire. Les provisions pour charges et les charges récupérables s'équilibrent et sont exclues.
+    return `${enTetePage('🧮', `Revenus fonciers ${annee}`, 'Estimation par propriétaire, à vérifier avec votre conseiller', bienFilter())}
+      <p class="small muted">ℹ️ Estimation indicative (location nue, régime réel), par propriétaire. Les provisions pour charges et les charges récupérables s'équilibrent et sont exclues.
         Vérifiez avec les règles fiscales en vigueur ou votre conseiller. En location meublée (LMNP), le régime est différent (BIC, amortissements).</p>
       ${sections.join('')}`;
   };
@@ -1864,7 +2097,7 @@
 
   views.gmail = () => {
     const g = cfgGmail();
-    if (!db.biens.length) return `<h1>Import Gmail</h1>${needBien()}`;
+    if (!db.biens.length) return `${enTetePage('✉️', 'Import Gmail')}${needBien()}`;
     const horsLigne = location.protocol === 'file:';
     const guide = `<details ${g.clientId ? '' : 'open'}><summary>Configuration (une seule fois, environ 5 minutes)</summary>
       <ol class="small">
@@ -1886,8 +2119,7 @@
       .map((x) => `<button class="secondary" data-act="regleGest" data-id="${x.id}">+ Règle pour ${h(x.nom)}</button>`)
       .join(' ');
     const connecte = window.GmailSource && GmailSource.estConnecte();
-    return `<div class="toolbar"><h1 style="margin:0">Import Gmail</h1><span class="spacer"></span>
-        ${connecte ? '<span class="badge st-ok">Connecté à Gmail</span><button class="secondary" data-act="gmailDeco">Se déconnecter</button>' : ''}</div>
+    return `${enTetePage('✉️', 'Import Gmail', 'Appels de fonds et relevés de gérance lus directement dans vos e-mails', connecte ? '<span class="badge st-ok">● Connecté à Gmail</span><button class="secondary" data-act="gmailDeco">Se déconnecter</button>' : '')}
       <p class="muted small">Récupère automatiquement les PDF joints à vos e-mails (appels de fonds du syndic, relevés de gérance de l'agence), en extrait les montants et vous les fait vérifier avant de les ajouter.</p>
       ${horsLigne ? `<div class="card" style="border-color:var(--warn)"><b>Ouvrez l'outil via une adresse web pour utiliser Gmail.</b>
         <p class="small">Google refuse les connexions depuis un fichier ouvert directement. Utilisez la version en ligne (GitHub Pages) ou lancez dans le dossier de l'outil :
@@ -2081,7 +2313,7 @@
   // ---------- Paramètres ----------
   views.parametres = () => {
     const n = (k) => db[k].length;
-    return `<h1>Paramètres</h1>
+    return `${enTetePage('⚙️', 'Paramètres', 'Synchronisation, sauvegardes, sécurité')}
       <div class="card"><h2 style="margin-top:0">Propriétaires et gestionnaires</h2>
         <p class="small muted">Les SCI (ou le propriétaire en nom propre) apparaissent comme bailleur sur les quittances, avis d'échéance et décomptes. Ils se gèrent dans l'onglet <a href="#biens">Biens</a>,
         avec les gestionnaires : ${db.proprietaires.length} propriétaire(s), ${db.gestionnaires.length} gestionnaire(s).</p></div>
