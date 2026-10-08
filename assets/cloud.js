@@ -10,8 +10,10 @@
   'use strict';
   const SDK = 'https://www.gstatic.com/firebasejs/10.12.2/';
   const NOM_APP = 'gestion-locative';
-  // Projet Firebase de l'outil : seule la clé API (publique) est à saisir dans l'outil.
+  // Projet Firebase de l'outil, configuré d'office sur tout navigateur : il suffit de se connecter.
+  // Ces identifiants sont publics par nature ; l'accès aux données dépend du compte et des règles.
   const PROJET = {
+    apiKey: 'AIzaSyBS7pwDKZT7_f9OslmE88XULCMyhDgdjDQ',
     projectId: 'location-1a379',
     authDomain: 'location-1a379.firebaseapp.com',
     appId: '1:740693444167:web:fe84267b5c447f3f875362',

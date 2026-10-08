@@ -440,10 +440,10 @@
       <div class="card">
         <p>Cet outil vous aide à suivre vos biens en location, détenus en SCI ou en nom propre, gérés en direct ou par une agence, en copropriété ou non : loyers, charges et appels de fonds, régularisation annuelle, prêts immobiliers et revenus fonciers.</p>
         <p>Pour commencer : déclarez vos <b>SCI</b> et votre <b>gestionnaire</b>, puis vos <b>biens</b> (onglet Biens).</p>
-        <p>Vos données restent <b>dans ce navigateur</b>. Pensez à faire des sauvegardes régulières depuis <a href="#parametres">Paramètres</a>.</p>
         <div class="toolbar"><button data-act="goto" data-v="biens">Ajouter un premier bien</button>
         <button class="secondary" data-act="demo">Charger un exemple</button></div>
-      </div>`;
+      </div>
+      ${cloud.cfg && !(cloud.utilisateur && cloud.utilisateur.emailVerified) ? `<p style="margin:16px 0 0"><b>Vos données sont déjà sur un autre appareil ?</b> Connectez-vous ci-dessous pour les retrouver.</p>${htmlCarteCloud()}` : ''}`;
     }
     const s = C.syntheseAnnee(db, annee, idsFiltre());
     const kpi = (label, value, cls = '') => `<div class="card kpi"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`;
@@ -2302,12 +2302,17 @@
   // La configuration (publique par nature) est gardée à part, en clair, pour être retrouvée
   // même après une réinitialisation des données locales.
   const CLOUD_KEY = 'gestion-location-cloud';
+  // Sans configuration enregistrée, le projet Firebase de l'outil est utilisé d'office :
+  // sur un nouveau navigateur, il suffit de se connecter pour retrouver ses données.
   const lireCloudCfg = () => {
+    let c = null;
     try {
-      return JSON.parse(lireLocal(CLOUD_KEY) || 'null');
+      c = JSON.parse(lireLocal(CLOUD_KEY) || 'null');
     } catch (e) {
-      return null;
+      /* configuration illisible : projet par défaut */
     }
+    if (c && c.desactive) return null;
+    return c && c.config ? c : { config: Cloud.lireConfig(Cloud.PROJET), base: 'principal' };
   };
   const cloud = { cfg: lireCloudCfg(), pret: false, utilisateur: null, version: null, arret: null, statut: '', erreur: '', minuteur: null, choix: null };
   const cloudBase = () => (cloud.cfg && cloud.cfg.base) || 'principal';
@@ -2474,7 +2479,7 @@
   actions.cloudOublier = async () => {
     if (cloud.arret) cloud.arret();
     if (cloud.pret && Cloud.utilisateur()) await Cloud.deconnexion();
-    localStorage.removeItem(CLOUD_KEY);
+    localStorage.setItem(CLOUD_KEY, JSON.stringify({ desactive: true }));
     Object.assign(cloud, { cfg: null, utilisateur: null, version: null, arret: null, erreur: '', choix: null });
     etatCloud();
     render();
