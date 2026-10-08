@@ -202,3 +202,23 @@ test('révisions de loyer et de provisions en cours de bail', () => {
   assert.equal(par['2026-05'].du, 549.89);
   assert.deepEqual(C.conditionsAu(bail, '2026-06'), { loyerHC: 474.89, provisionCharges: 75 });
 });
+
+test('paiements automatiques (virement permanent le 30) et récapitulatif annuel', () => {
+  const bail = { id: 'm', dateDebut: '2026-02-01', loyerHC: 520, provisionCharges: 50, jourPaiement: 30, paiementAuto: true };
+  const data = { baux: [bail, { id: 'x', dateDebut: '2026-01-01', loyerHC: 400, jourPaiement: 1 }], paiements: [] };
+  const a = C.paiementsAutomatiques(data, '2026-10-08');
+  assert.deepEqual(a.map((p) => p.date), ['2026-02-28', '2026-03-30', '2026-04-30', '2026-05-30', '2026-06-30', '2026-07-30', '2026-08-30', '2026-09-30']);
+  assert.ok(a.every((p) => p.bailId === 'm' && p.montant === 570));
+  data.paiements = a;
+  assert.equal(C.paiementsAutomatiques(data, '2026-10-29').length, 0);
+  assert.deepEqual(C.paiementsAutomatiques(data, '2026-10-30').map((p) => p.id), ['auto-m-2026-10']);
+  const r = C.recapLoyers(bail, data.paiements, '2026-01', '2026-12', '2026-10-08');
+  assert.equal(r.regles.length, 8);
+  assert.equal(r.totalRegle, 4560);
+  assert.equal(r.loyers, 4160);
+  assert.equal(r.resteDu, 0);
+  assert.equal(r.regles[7].datePaiement, '2026-09-30');
+  const r2 = C.recapLoyers(bail, data.paiements, '2026-01', '2026-12', '2026-11-05');
+  assert.deepEqual(r2.nonRegles.map((e) => e.periode), ['2026-10']);
+  assert.equal(C.dateEcheance(bail, '2028-02'), '2028-02-29');
+});

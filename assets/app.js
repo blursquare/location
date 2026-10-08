@@ -452,7 +452,7 @@
     if (annee <= Number(currentPeriod().slice(0, 4))) {
       for (const b of db.baux.filter((b) => dans(b.bienId))) {
         for (const e of C.situationBail(b, db.paiements, `${annee}-01`, lastPeriod)) {
-          if (e.reste > 0.009) impayes.push({ b, e });
+          if (e.reste > 0.009 && C.dateEcheance(b, e.periode) <= today()) impayes.push({ b, e });
         }
       }
     }
@@ -660,7 +660,9 @@
     { name: 'loyerHC', label: 'Loyer hors charges (€/mois)', type: 'number', required: true, min: 0 },
     { name: 'provisionCharges', label: 'Provision sur charges (€/mois)', type: 'number', min: 0 },
     { name: 'depotGarantie', label: 'Dépôt de garantie (€)', type: 'number', min: 0 },
-    { name: 'jourPaiement', label: 'Jour de paiement', type: 'number', step: '1', min: 1, default: 5 },
+    { name: 'jourPaiement', label: 'Jour de paiement', type: 'number', step: '1', min: 1, default: 5, help: 'Le 30 : fin de mois (le 28 ou 29 en février)' },
+    { name: 'paiementAuto', label: 'Paiement automatique (virement permanent) : chaque loyer est enregistré comme réglé à son échéance', type: 'checkbox', full: true },
+    { name: 'paiementAutoMode', label: 'Mode de paiement', type: 'select', options: MODES.map((m) => [m, m]), showIf: ['paiementAuto', true] },
     { name: 'irlTrimestre', label: 'Trimestre IRL de référence', help: 'Ex. : T2 2026' },
     { name: 'irlValeur', label: 'Valeur IRL de référence', type: 'number', step: '0.01' },
     { name: 'garant', label: 'Garant / caution', full: true },
@@ -683,6 +685,8 @@
           <td><button class="link" data-act="editBail" data-id="${b.id}">Modifier</button>
           <button class="link" data-act="irl" data-id="${b.id}">Révision IRL</button>
           <button class="link" data-act="revisions" data-id="${b.id}">Historique du loyer</button>
+          <button class="link" data-act="quittanceAnnuelle" data-id="${b.id}">Quittance annuelle</button>
+          <button class="link" data-act="attestationPaiement" data-id="${b.id}">Attestation de paiement</button>
           <button class="link danger" data-act="delBail" data-id="${b.id}">Supprimer</button></td></tr>`;
       });
     return `<div class="toolbar"><h1 style="margin:0">Locataires &amp; baux</h1><span class="spacer"></span>${bienFilter()}<button data-act="editBail">+ Nouveau bail</button></div>
@@ -920,6 +924,14 @@
     );
   };
 
+  /** Baux en virement permanent : enregistre les loyers échus non encore saisis. */
+  function appliquerPaiementsAuto() {
+    const ajouts = C.paiementsAutomatiques(db, today());
+    if (!ajouts.length) return;
+    db.paiements.push(...ajouts);
+    save();
+  }
+
   // ---------- Documents imprimables ----------
   function printDoc(title, body) {
     const w = window.open('', '_blank');
@@ -985,6 +997,257 @@
       <p>À régler au plus tard le ${dateFr(C.periodKey(y, m) + '-' + String(jour).padStart(2, '0'))}.</p>`
     );
   }
+
+  // ---------- Quittance annuelle et attestation de paiement (aperçu, impression, PDF) ----------
+  /*
+   * Document structuré : { titre, sousTitre, bailleur: [lignes], locataire: [lignes], paragraphes: [],
+   *   tableau: { colonnes: [{ label, num }], lignes: [[…]], total: […] }, suite: [], fait, signature: [lignes], mentions: [] }
+   * rendu en HTML (aperçu et impression) ou en PDF (téléchargement).
+   */
+  function docHtml(d) {
+    const lignes = (l) => l.map((x, i) => (i ? `<br><span class="small">${h(x)}</span>` : `<b>${h(x)}</b>`)).join('');
+    const t = d.tableau;
+    return `<div class="cols"><div>${lignes(d.bailleur)}</div><div>${lignes(d.locataire)}</div></div>
+      <h1>${h(d.titre)}${d.sousTitre ? `<br><small>${h(d.sousTitre)}</small>` : ''}</h1>
+      ${d.paragraphes.map((x) => `<p>${h(x)}</p>`).join('')}
+      ${t ? `<table><tr>${t.colonnes.map((c) => `<td class="${c.num ? 'n' : ''}"><b>${h(c.label)}</b></td>`).join('')}</tr>
+        ${t.lignes.map((l) => `<tr>${l.map((x, i) => `<td class="${t.colonnes[i].num ? 'n' : ''}">${h(x)}</td>`).join('')}</tr>`).join('')}
+        ${t.total ? `<tr class="t">${t.total.map((x, i) => `<td class="${t.colonnes[i].num ? 'n' : ''}">${h(x)}</td>`).join('')}</tr>` : ''}</table>` : ''}
+      ${(d.suite || []).map((x) => `<p>${h(x)}</p>`).join('')}
+      <p>${h(d.fait)}</p><p>${d.signature.map(h).join('<br>')}</p><br><br>
+      ${(d.mentions || []).map((x) => `<p class="small">${h(x)}</p>`).join('')}`;
+  }
+  const DOC_CSS = `.doc{font:14px/1.5 Georgia,serif;color:#111;background:#fff;padding:16px;border-radius:8px}
+    .doc h1{font-size:20px;text-align:center;margin:20px 0}.doc table{width:100%;border-collapse:collapse;margin:12px 0}
+    .doc td{padding:4px 6px;border-bottom:1px solid #ddd}.doc td.n{text-align:right}.doc tr.t td{font-weight:bold;border-top:2px solid #111}
+    .doc .cols{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}.doc .small{font-size:12px;color:#555}`;
+
+  let jsPdfCharge = null;
+  function chargerJsPdf() {
+    if (window.jspdf) return Promise.resolve(window.jspdf);
+    jsPdfCharge =
+      jsPdfCharge ||
+      new Promise((ok, ko) => {
+        const sc = document.createElement('script');
+        sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+        sc.onload = () => ok(window.jspdf);
+        sc.onerror = () => ((jsPdfCharge = null), ko(new Error('création du PDF impossible (connexion internet ?)')));
+        document.head.appendChild(sc);
+      });
+    return jsPdfCharge;
+  }
+  // Polices standard du PDF : espaces insécables remplacées, apostrophes et tirets typographiques conservés.
+  const pdfTexte = (x) => String(x == null ? '' : x).replace(/[   ]/g, ' ');
+
+  async function docPdf(d) {
+    const { jsPDF } = await chargerJsPdf();
+    const pdf = new jsPDF({ unit: 'mm', format: 'a4' });
+    const G = 20;
+    const L = 170;
+    let y = 22;
+    const saut = (hauteur) => {
+      if (y + hauteur > 280) {
+        pdf.addPage();
+        y = 22;
+      }
+    };
+    const bloc = (texte, taille = 10.5, style = 'normal', interligne = 1.45) => {
+      pdf.setFont('helvetica', style);
+      pdf.setFontSize(taille);
+      for (const l of pdf.splitTextToSize(pdfTexte(texte), L)) {
+        saut(taille * 0.3528 * interligne);
+        pdf.text(l, G, y);
+        y += taille * 0.3528 * interligne;
+      }
+    };
+    // En-tête : bailleur à gauche, locataire à droite
+    const colonne = (lignes, x, largeur) => {
+      let yy = 22;
+      lignes.forEach((l, i) => {
+        pdf.setFont('helvetica', i ? 'normal' : 'bold');
+        pdf.setFontSize(i ? 9 : 10.5);
+        for (const s of pdf.splitTextToSize(pdfTexte(l), largeur)) {
+          pdf.text(s, x, yy);
+          yy += i ? 4.2 : 5;
+        }
+      });
+      return yy;
+    };
+    y = Math.max(colonne(d.bailleur, G, 80), colonne(d.locataire, G + 95, 75)) + 10;
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(16);
+    pdf.text(pdfTexte(d.titre), 105, y, { align: 'center' });
+    y += 7;
+    if (d.sousTitre) {
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(11);
+      pdf.text(pdfTexte(d.sousTitre), 105, y, { align: 'center' });
+      y += 6;
+    }
+    y += 6;
+    for (const p of d.paragraphes) bloc(p), (y += 2.5);
+    const t = d.tableau;
+    if (t) {
+      const n = t.colonnes.length;
+      const larg = [L - (n - 1) * 27, ...Array(n - 1).fill(27)];
+      const ligne = (cells, gras) => {
+        saut(7);
+        pdf.setFont('helvetica', gras ? 'bold' : 'normal');
+        pdf.setFontSize(9.5);
+        let x = G;
+        cells.forEach((c, i) => {
+          const txt = pdfTexte(c);
+          if (t.colonnes[i].num) pdf.text(txt, x + larg[i] - 1.5, y, { align: 'right' });
+          else pdf.text(pdf.splitTextToSize(txt, larg[i] - 2)[0] || '', x + 1.5, y);
+          x += larg[i];
+        });
+        y += 2.2;
+        pdf.setDrawColor(gras ? 40 : 205);
+        pdf.setLineWidth(gras ? 0.4 : 0.2);
+        pdf.line(G, y, G + L, y);
+        y += 4.6;
+      };
+      y += 1;
+      ligne(t.colonnes.map((c) => c.label), true);
+      for (const l of t.lignes) ligne(l, false);
+      if (t.total) ligne(t.total, true);
+      y += 3;
+    }
+    for (const p of d.suite || []) bloc(p), (y += 2.5);
+    y += 3;
+    bloc(d.fait);
+    y += 2;
+    for (const s of d.signature) bloc(s);
+    y += 22;
+    for (const m of d.mentions || []) bloc(m, 8.5, 'italic', 1.35), (y += 1);
+    pdf.setProperties({ title: pdfTexte(`${d.titre} ${d.sousTitre || ''}`), creator: 'Gestion locative' });
+    return pdf;
+  }
+
+  /** Aperçu dans l'outil, avec téléchargement du PDF et impression (sans fenêtre surgissante). */
+  function ouvrirDocument(d, nomFichier) {
+    openForm(
+      d.titre,
+      [{ type: 'html', html: `<style>${DOC_CSS}</style><div class="doc">${docHtml(d)}</div><p class="small muted" id="doc-msg"></p>
+        <div class="toolbar"><button type="button" class="secondary" id="doc-imprimer">🖨 Imprimer</button></div>` }],
+      {},
+      () => {
+        const msg = document.getElementById('doc-msg');
+        msg.textContent = 'Création du PDF…';
+        docPdf(d)
+          .then((pdf) => {
+            pdf.save(nomFichier);
+            msg.textContent = `PDF téléchargé : ${nomFichier}`;
+          })
+          .catch((e) => (msg.textContent = e.message));
+        return false;
+      },
+      '⬇ Télécharger le PDF'
+    );
+    document.getElementById('doc-imprimer').onclick = () => printDoc(nomFichier.replace(/\.pdf$/, ''), docHtml(d));
+  }
+
+  const nomFichierDoc = (prefixe, b, suffixe) => `${prefixe}-${String(b.locataire).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w]+/g, '-').replace(/^-|-$/g, '')}-${suffixe}.pdf`;
+  function partiesDoc(b) {
+    const bien = bienById(b.bienId) || {};
+    const p = proprio(bien);
+    const g = gestionnaire(bien);
+    const sci = /^sci/.test(p.type || '');
+    const gerant = p.gerant || 'son gérant';
+    return {
+      bien,
+      bailleur: [`Bailleur : ${p.nom || '(propriétaire — voir Biens)'}`, ...(p.siren ? [`SIREN ${p.siren}`] : []), ...String(p.adresse || '').split('\n').filter(Boolean), ...(g ? [`Mandataire de gestion : ${g.nom}`] : [])],
+      locataire: [`Locataire : ${b.locataire}`, ...String(bien.adresse || '').split(/\n|, (?=\d{5} )/).filter(Boolean)],
+      declarant: sci ? `La société ${p.nom}, représentée par ${gerant} en qualité de gérant, propriétaire` : `Je soussigné(e), ${p.nom || '…'}, propriétaire`,
+      signature: sci ? [`Pour ${p.nom}`, `${gerant}, en qualité de gérant`] : [p.nom || ''],
+    };
+  }
+  const finDuMois = (periode) => {
+    const [y, m] = periode.split('-').map(Number);
+    return `${periode}-${String(C.daysInMonth(y, m)).padStart(2, '0')}`;
+  };
+  const debutDuMois = (b, e) => (b.dateDebut.slice(0, 7) === e.periode ? b.dateDebut : `${e.periode}-01`);
+  const colonnesLoyer = [{ label: 'Mois' }, { label: 'Loyer HC', num: true }, { label: 'Charges', num: true }, { label: 'Total', num: true }, { label: 'Payé le', num: true }];
+
+  function quittanceAnnuelle(b, annee) {
+    const x = partiesDoc(b);
+    const r = C.recapLoyers(b, db.paiements, `${annee}-01`, `${annee}-12`, today());
+    if (!r.regles.length) return alert(`Aucun loyer réglé en ${annee} pour ${b.locataire}.`);
+    const premier = r.regles[0];
+    const dernier = r.regles[r.regles.length - 1];
+    const finBail = b.dateFin && b.dateFin.slice(0, 7) === dernier.periode ? b.dateFin : finDuMois(dernier.periode);
+    const anneeComplete = dernier.periode === `${annee}-12` || (b.dateFin && b.dateFin.slice(0, 7) === dernier.periode);
+    const d = {
+      titre: 'Quittance de loyer annuelle',
+      sousTitre: `Année ${annee}`,
+      bailleur: x.bailleur,
+      locataire: x.locataire,
+      paragraphes: [
+        `${x.declarant} du logement désigné ci-dessus, déclare avoir reçu de ${b.locataire} la somme de ${eur(r.totalRegle)} (${eur(r.loyers)} de loyer et ${eur(r.provisions)} de provisions sur charges) au titre du paiement des loyers et charges pour la période du ${dateFr(debutDuMois(b, premier))} au ${dateFr(finBail)}, détaillée ci-dessous, et lui en donne quittance, sous réserve de tous ses droits.`,
+      ],
+      tableau: {
+        colonnes: colonnesLoyer,
+        lignes: r.regles.map((e) => [periodeLong(e.periode), eur(e.loyer), eur(e.provision), eur(e.paye), dateFr(e.datePaiement)]),
+        total: ['Total', eur(r.loyers), eur(r.provisions), eur(r.totalRegle), ''],
+      },
+      suite: [
+        ...(r.nonRegles.length ? [`Échéances non réglées à ce jour, non couvertes par la présente quittance : ${r.nonRegles.map((e) => `${periodeLong(e.periode)} (${eur(e.reste)})`).join(', ')}.`] : []),
+        ...(anneeComplete ? [] : [`Quittance établie pour les échéances réglées au ${dateFr(today())}.`]),
+      ],
+      fait: `Fait le ${dateFr(today())}`,
+      signature: x.signature,
+      mentions: ['Cette quittance récapitulative remplace les quittances et reçus mensuels des mêmes termes. Délivrée gratuitement (article 21 de la loi n° 89-462 du 6 juillet 1989).'],
+    };
+    ouvrirDocument(d, nomFichierDoc('quittance-annuelle', b, annee));
+  }
+
+  const TYPES_BAIL = { vide: 'location vide', meuble: 'location meublée', etudiant: 'location meublée étudiante', mobilite: 'bail mobilité', parking: 'location de parking' };
+  function attestationPaiement(b, date) {
+    const x = partiesDoc(b);
+    const fin = b.dateFin && b.dateFin < date ? b.dateFin : date;
+    const r = C.recapLoyers(b, db.paiements, b.dateDebut.slice(0, 7), fin.slice(0, 7), date);
+    const cond = C.conditionsAu(b, fin.slice(0, 7));
+    const dernier = r.regles[r.regles.length - 1];
+    const aJour = r.resteDu <= 0.009;
+    const recents = r.mois.slice(-12);
+    const d = {
+      titre: 'Attestation de paiement des loyers',
+      sousTitre: `Situation au ${dateFr(date)}`,
+      bailleur: x.bailleur,
+      locataire: x.locataire,
+      paragraphes: [
+        `${x.declarant} du logement désigné ci-dessus, atteste que ${b.locataire} ${b.dateFin && b.dateFin < date ? `a occupé ce logement en qualité de locataire du ${dateFr(b.dateDebut)} au ${dateFr(b.dateFin)}` : `occupe ce logement en qualité de locataire depuis le ${dateFr(b.dateDebut)}`}, en vertu d'un bail d'habitation (${TYPES_BAIL[b.typeBail] || 'location'}).`,
+        `Le loyer mensuel s'élève à ${eur(cond.loyerHC)} hors charges, plus ${eur(cond.provisionCharges)} de provision sur charges, soit ${eur(cond.loyerHC + cond.provisionCharges)} charges comprises${b.jourPaiement ? `, payable le ${b.jourPaiement} de chaque mois` : ''}.`,
+        aJour
+          ? `À cette date, ${b.locataire} est à jour du paiement de ses loyers et charges : toutes les échéances depuis l'entrée dans les lieux ont été intégralement réglées${dernier ? `, la dernière (${periodeLong(dernier.periode)}) le ${dateFr(dernier.datePaiement)}` : ''}. Aucun impayé n'est à signaler.`
+          : `À cette date, ${b.locataire} reste redevable de ${eur(r.resteDu)} au titre des échéances suivantes : ${r.nonRegles.map((e) => `${periodeLong(e.periode)} (${eur(e.reste)})`).join(', ')}.`,
+      ],
+      tableau: {
+        colonnes: [{ label: 'Mois' }, { label: 'Montant dû', num: true }, { label: 'Montant réglé', num: true }, { label: 'Payé le', num: true }],
+        lignes: recents.map((e) => [periodeLong(e.periode), eur(e.du), eur(e.paye), e.regle ? dateFr(e.datePaiement) : 'non réglé']),
+      },
+      suite: [`${recents.length < r.mois.length ? 'Détail des 12 dernières échéances. ' : ''}Attestation établie à la demande du locataire, pour servir et valoir ce que de droit.`],
+      fait: `Fait le ${dateFr(today())}`,
+      signature: x.signature,
+    };
+    ouvrirDocument(d, nomFichierDoc('attestation-paiement-loyers', b, date));
+  }
+  actions.quittanceAnnuelle = ({ id }) => {
+    const b = bailById(id);
+    const debut = Number(b.dateDebut.slice(0, 4));
+    const fin = Math.min(Number((b.dateFin || today()).slice(0, 4)), Number(today().slice(0, 4)));
+    const annees = [];
+    for (let a = fin; a >= debut; a--) annees.push([String(a), String(a)]);
+    openForm(`Quittance annuelle — ${b.locataire}`, [{ name: 'annee', label: 'Année', type: 'select', options: annees }], { annee: String(fin) }, (v) => {
+      setTimeout(() => quittanceAnnuelle(b, v.annee));
+    }, 'Afficher');
+  };
+  actions.attestationPaiement = ({ id }) => {
+    const b = bailById(id);
+    openForm(`Attestation de paiement — ${b.locataire}`, [{ type: 'html', html: '<p class="small muted">Atteste de la situation des paiements à la date choisie (à jour, ou montant restant dû), avec le détail des 12 dernières échéances.</p>' }, { name: 'date', label: 'Situation au', type: 'date', required: true }], { date: today() }, (v) => {
+      setTimeout(() => attestationPaiement(b, v.date));
+    }, 'Afficher');
+  };
 
   // ---------- Charges ----------
   const champsCharge = () => [
@@ -1976,6 +2239,7 @@
     db = C.migrer({ ...empty(), ...JSON.parse(distant.json) });
     cloud.version = distant.version;
     save({ local: true });
+    setTimeout(appliquerPaiementsAuto);
     if (notifier) {
       const quand = distant.majLe ? distant.majLe.toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '';
       bandeauImport = { type: 'ok', texte: `Données mises à jour depuis Firebase${distant.majPar ? ` par ${distant.majPar}` : ''}${quand ? ` le ${quand}` : ''}.` };
@@ -2174,6 +2438,7 @@
   };
   function appliquerImport(d) {
     db = C.migrer({ ...empty(), ...d });
+    db.paiements.push(...C.paiementsAutomatiques(db, today()));
     save();
     view = 'dashboard';
     if (location.hash) history.replaceState(null, '', location.pathname + location.search);
@@ -2281,6 +2546,7 @@
         }
         document.body.classList.remove('locked');
         activite();
+        appliquerPaiementsAuto();
         await traiterImportLien();
         render();
         demarrerCloud();
