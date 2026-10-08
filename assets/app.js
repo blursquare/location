@@ -1859,7 +1859,7 @@
     { name: 'gestionnaireId', label: 'Gestionnaire', type: 'select', options: db.gestionnaires.map((g) => [g.id, g.nom]), placeholder: '—', showIf: ['type', 'gerance'], help: 'Les biens qu’il gère sont repérés dans ses relevés, même regroupés dans un seul PDF' },
     { name: 'bienId', label: 'Bien par défaut', type: 'select', options: bienOptions(), help: "Remplacé si l'adresse, le lot ou le locataire d'un autre bien figure dans le PDF" },
     { name: 'pctRecup', label: 'Part récupérable des appels (%)', type: 'number', step: '1', min: 0, help: 'Estimation, à ajuster après le décompte annuel du syndic', showIf: ['type', 'appel'] },
-    { name: 'depuis', label: 'Chercher depuis le', type: 'date' },
+    { name: 'depuis', label: 'Chercher depuis le', type: 'date', help: 'Les e-mails plus anciens sont ignorés' },
   ];
 
   views.gmail = () => {
@@ -1878,7 +1878,7 @@
       Google affichera « application non validée » : c'est normal pour une application personnelle en mode Test, cliquez sur <i>Continuer</i>.</p></details>`;
     const regles = g.regles.map(
       (r) => `<tr><td><b>${h(r.nom)}</b></td><td>${{ appel: 'Appels de fonds', gerance: 'Relevés de gérance', auto: 'Automatique' }[r.type] || ''}</td>
-        <td><code>${h(r.requete)}</code></td><td>${r.type === 'gerance' && r.gestionnaireId ? h((db.gestionnaires.find((g) => g.id === r.gestionnaireId) || {}).nom || '') + ' (ses biens)' : h(bienNom(r.bienId))}</td><td class="num">${r.type === 'gerance' ? '—' : pct(r.pctRecup || 0)}</td>
+        <td><code>${h(r.requete)}</code>${r.depuis ? `<div class="small muted">e-mails reçus depuis le ${dateFr(r.depuis)}</div>` : ''}</td><td>${r.type === 'gerance' && r.gestionnaireId ? h((db.gestionnaires.find((g) => g.id === r.gestionnaireId) || {}).nom || '') + ' (ses biens)' : h(bienNom(r.bienId))}</td><td class="num">${r.type === 'gerance' ? '—' : pct(r.pctRecup || 0)}</td>
         <td><button class="link" data-act="editRegle" data-id="${r.id}">Modifier</button><button class="link danger" data-act="delRegle" data-id="${r.id}">Supprimer</button></td></tr>`
     );
     const suggestions = db.gestionnaires
@@ -1973,7 +1973,7 @@
   };
   actions.editRegle = (d) => {
     const g = cfgGmail();
-    const r = d.id ? g.regles.find((x) => x.id === d.id) : { type: 'appel', bienId: bienDefaut(), pctRecup: 70, gestionnaireId: (db.gestionnaires[0] || {}).id };
+    const r = d.id ? g.regles.find((x) => x.id === d.id) : { type: 'appel', bienId: bienDefaut(), pctRecup: 70, gestionnaireId: (db.gestionnaires[0] || {}).id, depuis: today() };
     openForm(d.id ? 'Modifier la règle' : 'Nouvelle règle de recherche', champsRegle(), r, (v) => {
       const i = g.regles.findIndex((x) => x.id === v.id);
       if (i >= 0) g.regles[i] = v;
@@ -1984,7 +1984,7 @@
   actions.regleGest = (d) => {
     const x = db.gestionnaires.find((y) => y.id === d.id);
     const domaine = (x.email.split('@')[1] || x.email).trim();
-    cfgGmail().regles.push({ id: uid(), nom: x.nom, type: 'gerance', requete: `from:(@${domaine})`, gestionnaireId: x.id, bienId: (db.biens.find((b) => b.gestionnaireId === x.id) || {}).id || '' });
+    cfgGmail().regles.push({ id: uid(), nom: x.nom, type: 'gerance', requete: `from:(@${domaine})`, depuis: today(), gestionnaireId: x.id, bienId: (db.biens.find((b) => b.gestionnaireId === x.id) || {}).id || '' });
     save();
     render();
   };
