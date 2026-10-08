@@ -181,6 +181,57 @@
     });
   }
 
+  /** Date d'échéance du loyer d'un mois (jour de paiement du bail, borné à la fin du mois). */
+  function dateEcheance(bail, periode) {
+    const [y, m] = periode.split('-').map(Number);
+    const jour = Math.min(Math.max(Number(bail.jourPaiement) || 1, 1), daysInMonth(y, m));
+    return `${periode}-${String(jour).padStart(2, '0')}`;
+  }
+
+  /**
+   * Paiements réputés reçus pour les baux en paiement automatique (virement permanent) :
+   * un paiement du solde de chaque mois dont l'échéance est passée, s'il manque.
+   */
+  function paiementsAutomatiques(data, aujourdHui) {
+    const ajouts = [];
+    for (const b of data.baux || []) {
+      if (!b.paiementAuto || !b.dateDebut) continue;
+      const debut = String(b.paiementAutoDepuis || b.dateDebut).slice(0, 7);
+      for (const e of situationBail(b, data.paiements || [], debut, aujourdHui.slice(0, 7))) {
+        const date = dateEcheance(b, e.periode);
+        if (date > aujourdHui || e.reste <= 0.009) continue;
+        const id = `auto-${b.id}-${e.periode}`;
+        if ((data.paiements || []).some((p) => p.id === id)) continue;
+        ajouts.push({ id, bailId: b.id, periode: e.periode, montant: e.reste, date, mode: b.paiementAutoMode || 'Virement', note: 'Paiement mensuel automatique (virement permanent)' });
+      }
+    }
+    return ajouts;
+  }
+
+  /**
+   * Récapitulatif des loyers d'un bail sur une période : mois réglés (avec date du dernier paiement),
+   * mois non réglés, totaux. Sert à la quittance annuelle et à l'attestation de paiement.
+   */
+  function recapLoyers(bail, paiements, fromPeriod, toPeriod, aujourdHui) {
+    const mois = situationBail(bail, paiements, fromPeriod, toPeriod)
+      .filter((e) => !aujourdHui || dateEcheance(bail, e.periode) <= aujourdHui || e.paye > 0)
+      .map((e) => {
+        const dates = paiements.filter((p) => p.bailId === bail.id && p.periode === e.periode && estLoyer(p)).map((p) => p.date).sort();
+        return { ...e, regle: e.reste <= 0.009, datePaiement: dates.pop() || null };
+      });
+    const regles = mois.filter((e) => e.regle);
+    const somme = (l, k) => round2(l.reduce((t, e) => t + e[k], 0));
+    return {
+      mois,
+      regles,
+      nonRegles: mois.filter((e) => !e.regle),
+      totalRegle: somme(regles, 'paye'),
+      loyers: somme(regles, 'loyer'),
+      provisions: somme(regles, 'provision'),
+      resteDu: round2(mois.reduce((t, e) => t + Math.max(e.reste, 0), 0)),
+    };
+  }
+
   /** Nouveau loyer après révision IRL. */
   function revisionIRL(loyer, irlReference, irlNouveau) {
     if (!irlReference || !irlNouveau) return loyer;
@@ -523,6 +574,9 @@
   }
 
   const api = {
+    dateEcheance,
+    paiementsAutomatiques,
+    recapLoyers,
     TYPES_PROPRIETAIRE,
     migrer,
     associes,
