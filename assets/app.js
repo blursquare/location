@@ -18,6 +18,7 @@
     paiements: [],
     charges: [],
     decomptes: [],
+    contacts: [],
     prets: [],
   });
 
@@ -1308,6 +1309,80 @@
     const rows = [['N', 'Date', 'Echeance', 'Capital', 'Interets', 'Assurance', 'Total', 'CRD']];
     for (const l of C.amortissement(p)) rows.push([l.n, l.date, l.echeance, l.capital, l.interets, l.assurance, l.total, l.crd]);
     downloadCSV(`amortissement-${(p.libelle || 'pret').replace(/\W+/g, '-')}.csv`, rows);
+  };
+
+  // ---------- Contacts ----------
+  const ROLES_CONTACT = {
+    syndic: 'Syndic de copropriété',
+    gestionnaire: 'Gestion locative',
+    locataire: 'Locataire',
+    banque: 'Banque / prêt',
+    notaire: 'Notaire',
+    assurance: 'Assurance',
+    promoteur: 'Promoteur / SAV',
+    artisan: 'Artisan / entreprise',
+    administration: 'Administration',
+    agence: 'Agence immobilière',
+    autre: 'Autre',
+  };
+  const champsContact = () => [
+    { name: 'nom', label: 'Nom', required: true, help: 'Personne ou service (ex. : Mathieu MOULIN, Service syndic)' },
+    { name: 'organisme', label: 'Organisme', help: 'Ex. : Pichet ADB, Crédit Mutuel' },
+    { name: 'role', label: 'Rôle', type: 'select', options: Object.entries(ROLES_CONTACT) },
+    { name: 'fonction', label: 'Fonction', help: 'Ex. : gestionnaire de copropriété' },
+    { name: 'email', label: 'E-mail', type: 'email' },
+    { name: 'telephone', label: 'Téléphone' },
+    { name: 'adresse', label: 'Adresse', type: 'textarea', adresse: 'bloc' },
+    { name: 'biens', label: 'Biens concernés', full: true, help: 'Noms des biens, séparés par des virgules (ex. : Terre des Rois B01, Terre des Rois C01)' },
+    { name: 'notes', label: 'Notes', type: 'textarea' },
+  ];
+  let rechercheContact = '';
+  views.contacts = () => {
+    const n = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    const q = n(rechercheContact);
+    const liste = (db.contacts || [])
+      .filter((c) => !q || n([c.nom, c.organisme, c.fonction, c.email, c.telephone, c.biens, c.notes, ROLES_CONTACT[c.role]].join(' ')).includes(q))
+      .filter((c) => !filtreBien || !c.biens || idsFiltre().some((id) => n(c.biens).includes(n(bienNom(id)))))
+      .sort((a, b) => (a.organisme || a.nom).localeCompare(b.organisme || b.nom, 'fr') || a.nom.localeCompare(b.nom, 'fr'));
+    const groupes = {};
+    for (const c of liste) (groupes[c.role || 'autre'] = groupes[c.role || 'autre'] || []).push(c);
+    const tel = (t) => (t ? `<a href="tel:${h(String(t).replace(/[^\d+]/g, ''))}">${h(t)}</a>` : '');
+    const sections = Object.keys(ROLES_CONTACT)
+      .filter((r) => groupes[r])
+      .map(
+        (r) => `<h2>${h(ROLES_CONTACT[r])} (${groupes[r].length})</h2>${table(
+          ['Contact', 'Coordonnées', 'Biens', ''],
+          groupes[r].map(
+            (c) => `<tr><td><b>${h(c.nom)}</b>${c.organisme ? `<div>${h(c.organisme)}</div>` : ''}${c.fonction ? `<div class="small muted">${h(c.fonction)}</div>` : ''}</td>
+              <td class="small">${c.email ? `<a href="mailto:${h(c.email)}">${h(c.email)}</a><br>` : ''}${tel(c.telephone)}${c.adresse ? `<div class="muted">${h(c.adresse).replace(/\n/g, '<br>')}</div>` : ''}</td>
+              <td class="small">${h(c.biens || '—')}${c.notes ? `<div class="muted">${h(c.notes)}</div>` : ''}</td>
+              <td><button class="link" data-act="editContact" data-id="${c.id}">Modifier</button><button class="link danger" data-act="delContact" data-id="${c.id}">Supprimer</button></td></tr>`
+          )
+        )}`
+      )
+      .join('');
+    return `<div class="toolbar"><h1 style="margin:0">Contacts</h1><span class="spacer"></span>${bienFilter()}<button data-act="editContact">+ Contact</button></div>
+      <input type="search" id="recherche-contact" placeholder="Rechercher un nom, un organisme, un e-mail…" value="${h(rechercheContact)}" style="margin-bottom:8px">
+      ${sections || '<div class="card empty">Aucun contact.</div>'}`;
+  };
+  el.addEventListener('input', (e) => {
+    if (e.target.id !== 'recherche-contact') return;
+    rechercheContact = e.target.value;
+    const pos = e.target.selectionStart;
+    render();
+    const champ = document.getElementById('recherche-contact');
+    champ.focus();
+    champ.setSelectionRange(pos, pos);
+  });
+  actions.editContact = (d) => {
+    const c = d.id ? db.contacts.find((x) => x.id === d.id) : { role: 'syndic' };
+    openForm(d.id ? 'Modifier le contact' : 'Nouveau contact', champsContact(), c, (v) => upsert('contacts', v));
+  };
+  actions.delContact = (d) => {
+    if (confirm('Supprimer ce contact ?')) {
+      remove('contacts', d.id);
+      render();
+    }
   };
 
   // ---------- Fiscalité ----------

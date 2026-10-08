@@ -27,6 +27,7 @@ Aucune installation ni serveur : ouvrez `index.html` dans un navigateur, ou la v
 | **Charges** | Charges payées en direct (bien hors copropriété), appels de fonds du syndic (génération trimestrielle avec fonds travaux ALUR), taxe foncière, PNO, travaux… avec la **part récupérable** ; **régularisation annuelle** par locataire et décompte imprimable. |
 | **Régularisation** | Régularisation annuelle des charges par locataire, à partir du décompte du syndic (exercice approuvé en AG) ou, à défaut, des appels de fonds ; charges payées en direct pour un bien hors copropriété ; **remboursement de la TEOM** (taxe d'ordures ménagères de l'avis de taxe foncière) au prorata de l'occupation ; décompte imprimable et suivi des règlements, distincts des loyers. |
 | **Prêts** | Mensualité, assurance, différé, **tableau d'amortissement** annuel et mensuel, CRD, coût total, export CSV. |
+| **Contacts** | Syndics, gestionnaires, banques, notaires, artisans… classés par rôle, recherche, liens e-mail et téléphone, filtre par bien. |
 | **Fiscalité** | Estimation du résultat foncier par propriétaire : 2044 en nom propre, 2072 pour une SCI à l'IR avec la quote-part de chaque associé, base de travail pour une SCI à l'IS. |
 
 ## Base partagée Firebase (facultatif)

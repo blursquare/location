@@ -492,6 +492,7 @@
     d.proprietaires = Array.isArray(d.proprietaires) ? d.proprietaires : [];
     d.gestionnaires = Array.isArray(d.gestionnaires) ? d.gestionnaires : [];
     d.decomptes = Array.isArray(d.decomptes) ? d.decomptes : [];
+    d.contacts = Array.isArray(d.contacts) ? d.contacts : [];
     d.biens = (d.biens || []).map((b) => ({
       ...b,
       enCopropriete: b.enCopropriete === undefined ? true : b.enCopropriete,
