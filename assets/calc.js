@@ -167,12 +167,14 @@
 
   /** Encaissement de loyer (par opposition à une régularisation de charges ou un remboursement de TEOM). */
   const estLoyer = (p) => !p.nature || p.nature === 'loyer';
+  // Créance soldée sans encaissement (dossier clos, perte) : solde l'échéance sans être un revenu.
+  const estAbandon = (p) => p.nature === 'abandon';
 
   /** Échéances d'un bail avec montant encaissé et reste dû par période. */
   function situationBail(bail, paiements, fromPeriod, toPeriod) {
     const parPeriode = {};
     for (const p of paiements) {
-      if (p.bailId !== bail.id || !estLoyer(p)) continue;
+      if (p.bailId !== bail.id || !(estLoyer(p) || estAbandon(p))) continue;
       parPeriode[p.periode] = (parPeriode[p.periode] || 0) + (Number(p.montant) || 0);
     }
     return echeancesBail(bail, fromPeriod, toPeriod).map((e) => {
@@ -376,8 +378,9 @@
       }
     }
     const paiementsAn = data.paiements.filter((p) => bailIds.has(p.bailId) && (p.periode || '').startsWith(y));
-    const encaisse = paiementsAn.reduce((s, p) => s + (Number(p.montant) || 0), 0);
+    const encaisse = paiementsAn.filter((p) => !estAbandon(p)).reduce((s, p) => s + (Number(p.montant) || 0), 0);
     const encaisseLoyers = paiementsAn.filter(estLoyer).reduce((s, p) => s + (Number(p.montant) || 0), 0);
+    const abandons = paiementsAn.filter(estAbandon).reduce((s, p) => s + (Number(p.montant) || 0), 0);
 
     const charges = data.charges.filter((c) => ids.has(c.bienId) && (c.date || '').startsWith(y));
     const chargesTotal = charges.reduce((s, c) => s + (Number(c.montant) || 0), 0);
@@ -410,7 +413,8 @@
       provisionsDues,
       totalDu,
       encaisse,
-      impayes: totalDu - encaisseLoyers,
+      impayes: totalDu - encaisseLoyers - abandons,
+      abandons,
       chargesTotal,
       chargesRecup,
       chargesDeductibles,

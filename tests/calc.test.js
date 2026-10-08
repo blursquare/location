@@ -250,3 +250,21 @@ test("fusion : doublons d'opérations saisies à la main, bail en cours obligato
   assert.equal(r.ajouts.paiements, 1);
   assert.equal(r.erreurs.length, 1); // juin 2025 : aucun bail en cours
 });
+
+test('créance soldée sans paiement : solde le mois sans compter comme revenu', () => {
+  const data = C.migrer({
+    biens: [{ id: 'b1', nom: 'A' }],
+    baux: [{ id: 'l1', bienId: 'b1', locataire: 'X', dateDebut: '2025-05-01', dateFin: '2025-05-31', loyerHC: 600 }],
+    paiements: [
+      { id: 'p1', bailId: 'l1', periode: '2025-05', montant: 400, date: '2025-05-05' },
+      { id: 'p2', bailId: 'l1', periode: '2025-05', montant: 200, date: '2026-10-08', nature: 'abandon' },
+    ],
+    charges: [],
+    prets: [],
+  });
+  assert.equal(C.situationBail(data.baux[0], data.paiements, '2025-05', '2025-05')[0].reste, 0);
+  const s = C.syntheseAnnee(data, 2025, null);
+  assert.equal(s.revenusBruts, 400);
+  assert.equal(s.encaisse, 400);
+  assert.equal(Math.round(s.impayes * 100) / 100, 0);
+});
