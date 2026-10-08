@@ -1,41 +1,108 @@
 rules_version = '2';
 
-// Règles de sécurité de la base Firestore de l'outil de gestion locative.
-// À coller dans la console Firebase : Firestore Database → Règles → Publier.
-// Remplacez les UID ci-dessous par ceux des comptes autorisés
-// (Authentication → Users → colonne « UID utilisateur »).
+// Règles de sécurité de la base Firestore de l'outil de gestion locative
+// (projet Firebase location-1a379).
+// Déploiement : npx -y firebase-tools@latest deploy --only firestore:rules
+// ou console Firebase → Firestore Database → Règles → coller ce fichier → Publier.
+//
+// ===============================================================
+// Modèle de données supposé
+// ===============================================================
+//
+// Collection : gestion
+// Identifiant du document : nom de la base (ex. « principal »), 1 à 40 caractères [A-Za-z0-9_-]
+// Champs :
+//   - json    : string    (obligatoire, < 900 000 caractères) - toutes les données de l'outil, sérialisées
+//   - version : int       (obligatoire, = version précédente + 1, 1 à la création) - évite les écrasements
+//   - majPar  : string    (obligatoire, = e-mail de l'auteur de la modification)
+//   - majLe   : timestamp (obligatoire, = heure du serveur au moment de l'écriture)
+//
+// Sous-collection : gestion/{base}/historique
+// Identifiant du document : numéro de version sur 6 chiffres (ex. « 000012 »)
+// Champs : identiques au document parent, au moment de l'écriture. Jamais modifiés ni supprimés.
+//
+// Accès : comptes Firebase Authentication (e-mail / mot de passe) dont l'adresse
+// est VÉRIFIÉE et figure dans la liste ci-dessous. Tout le reste est refusé.
+// La vérification de l'adresse empêche quiconque de créer un compte au nom
+// d'une adresse autorisée qu'il ne possède pas.
+//
+// ===============================================================
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function autorise() {
-      return request.auth != null && request.auth.uid in [
-        'UID_BASTIEN',
-        'UID_SOPHIE',
-        'UID_CLAUDE'
+    // ===============================================================
+    // Fonctions utilitaires
+    // ===============================================================
+
+    // Adresses autorisées (en minuscules). Pour ajouter quelqu'un (ex. Sophie),
+    // ajoutez son adresse ici puis republiez les règles.
+    function adressesAutorisees() {
+      return [
+        'anglument.b@gmail.com',        // Bastien
+        'anglument.b+claude@gmail.com'  // compte de Claude (mises à jour depuis vos documents)
       ];
     }
 
-    // Chaque écriture incrémente la version de 1 : deux appareils ne peuvent pas
-    // s'écraser mutuellement sans s'en apercevoir.
-    function contenuValide() {
-      let d = request.resource.data;
-      return d.keys().hasOnly(['json', 'version', 'majPar', 'majLe'])
-        && d.json is string && d.json.size() < 900000
-        && d.version is int
-        && d.version == (resource == null ? 1 : resource.data.version + 1);
+    function estConnecte() {
+      return request.auth != null;
     }
 
-    match /gestion/{base} {
-      allow read: if autorise();
-      allow create, update: if autorise() && contenuValide();
+    function estAutorise() {
+      return estConnecte()
+        && request.auth.token.email_verified == true
+        && request.auth.token.firebase.sign_in_provider == 'password'
+        && request.auth.token.email.lower() in adressesAutorisees();
+    }
 
-      // Historique : une copie par version, jamais modifiée ni supprimée depuis l'outil.
+    function nomDeBaseValide(base) {
+      return base is string && base.matches('^[A-Za-z0-9_-]{1,40}$');
+    }
+
+    // Validation d'un document « gestion » (création ET mise à jour).
+    function estDocumentGestionValide() {
+      let d = request.resource.data;
+      return d.keys().hasAll(['json', 'version', 'majPar', 'majLe'])
+        && d.keys().hasOnly(['json', 'version', 'majPar', 'majLe'])
+        && d.json is string && d.json.size() > 0 && d.json.size() < 900000
+        && d.version is int
+        && d.version == (resource == null ? 1 : resource.data.version + 1)
+        && d.majPar == request.auth.token.email
+        && d.majLe == request.time;
+    }
+
+    // Validation d'une copie d'historique : même contenu que le document écrit
+    // dans la même transaction, rangée sous son numéro de version.
+    function estHistoriqueValide(base, version) {
+      let d = request.resource.data;
+      let parent = getAfter(/databases/$(database)/documents/gestion/$(base)).data;
+      return d.keys().hasAll(['json', 'version', 'majPar', 'majLe'])
+        && d.keys().hasOnly(['json', 'version', 'majPar', 'majLe'])
+        && d.json is string && d.json.size() < 900000
+        && d.version is int
+        && version.matches('^[0-9]{6}$') && int(version) == d.version
+        && d.version == parent.version
+        && d.majPar == request.auth.token.email
+        && d.majLe == request.time;
+    }
+
+    // ===============================================================
+    // Règles
+    // ===============================================================
+
+    match /gestion/{base} {
+      allow get: if estAutorise() && nomDeBaseValide(base);
+      allow list: if false;
+      allow create, update: if estAutorise() && nomDeBaseValide(base) && estDocumentGestionValide();
+      allow delete: if false;
+
       match /historique/{version} {
-        allow read: if autorise();
-        allow create: if autorise() && request.resource.data.json is string;
+        allow read: if estAutorise();
+        allow create: if estAutorise() && nomDeBaseValide(base) && estHistoriqueValide(base, version);
+        allow update, delete: if false;
       }
     }
 
+    // Refus par défaut de tout le reste.
     match /{document=**} {
       allow read, write: if false;
     }

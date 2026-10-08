@@ -4,7 +4,7 @@
  * Sert à Claude pour reporter dans la base les données lues dans vos documents.
  *
  * Variables d'environnement :
- *   FIREBASE_CONFIG   chemin d'un fichier contenant le bloc firebaseConfig (ou ce bloc lui-même)
+ *   FIREBASE_CONFIG   clé API du projet (AIza…), ou bloc firebaseConfig, ou chemin d'un fichier le contenant
  *   FIREBASE_EMAIL    compte Firebase autorisé (ex. le compte dédié à Claude)
  *   FIREBASE_MDP      son mot de passe
  *   FIREBASE_BASE     nom de la base (défaut : principal)
@@ -16,6 +16,8 @@
  *   remplacer donnees.json       remplace toutes les données (nécessite --oui)
  *   modifier script.js           exécute script.js(donnees, outils) puis enregistre le résultat
  *   historique                   liste les dernières versions
+ *   inscription                  crée le compte FIREBASE_EMAIL (s'il n'existe pas) et envoie
+ *                                l'e-mail de vérification de l'adresse, indispensable pour accéder à la base
  */
 'use strict';
 const fs = require('fs');
@@ -61,7 +63,9 @@ function client(env = process.env) {
   let email = null;
 
   async function requete(url, options = {}) {
-    const r = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...(jeton ? { Authorization: `Bearer ${jeton}` } : {}), ...(options.headers || {}) } });
+    // Le jeton n'est transmis qu'à Firestore (les API d'authentification utilisent la clé API).
+    const auth = jeton && !url.startsWith(authHote) ? { Authorization: `Bearer ${jeton}` } : {};
+    const r = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...auth, ...(options.headers || {}) } });
     const texte = await r.text();
     const corps = texte ? JSON.parse(texte) : {};
     if (!r.ok) {
@@ -90,12 +94,40 @@ function client(env = process.env) {
     return { email, uid: r.localId };
   }
 
+  /** Crée le compte s'il n'existe pas, puis envoie l'e-mail de vérification si l'adresse n'est pas vérifiée. */
+  async function inscription() {
+    if (!env.FIREBASE_EMAIL || !env.FIREBASE_MDP) throw new Error('FIREBASE_EMAIL et FIREBASE_MDP sont nécessaires');
+    let cree = false;
+    try {
+      const r = await requete(`${authHote}/v1/accounts:signUp?key=${encodeURIComponent(config.apiKey)}`, {
+        method: 'POST',
+        body: JSON.stringify({ email: env.FIREBASE_EMAIL, password: env.FIREBASE_MDP, returnSecureToken: true }),
+      });
+      jeton = r.idToken;
+      email = r.email;
+      cree = true;
+    } catch (e) {
+      if (!/EMAIL_EXISTS/.test(e.message)) throw e;
+      await connexion();
+    }
+    const info = await requete(`${authHote}/v1/accounts:lookup?key=${encodeURIComponent(config.apiKey)}`, { method: 'POST', body: JSON.stringify({ idToken: jeton }) });
+    const verifie = !!(info.users && info.users[0] && info.users[0].emailVerified);
+    if (!verifie) {
+      await requete(`${authHote}/v1/accounts:sendOobCode?key=${encodeURIComponent(config.apiKey)}`, {
+        method: 'POST',
+        headers: { 'X-Firebase-Locale': 'fr' },
+        body: JSON.stringify({ requestType: 'VERIFY_EMAIL', idToken: jeton }),
+      });
+    }
+    return { email, cree, verifie };
+  }
+
   async function lire() {
     try {
       return depuisDocument(await requete(`${fsHote}/${nomDoc}`));
     } catch (e) {
       if (e.status === 404) return null;
-      if (e.status === 403) throw new Error(`lecture refusée : le compte ${email} n'est pas autorisé dans les règles Firestore`);
+      if (e.status === 403) throw new Error(`lecture refusée : l'adresse ${email} n'est pas vérifiée ou n'est pas autorisée dans les règles Firestore`);
       throw e;
     }
   }
@@ -115,7 +147,7 @@ function client(env = process.env) {
       }),
     }).catch((e) => {
       if (e.code === 'FAILED_PRECONDITION' || e.code === 'ALREADY_EXISTS') throw new Error('la base a été modifiée entre-temps : relancez la commande');
-      if (e.code === 'PERMISSION_DENIED') throw new Error(`écriture refusée : le compte ${email} n'est pas autorisé dans les règles Firestore`);
+      if (e.code === 'PERMISSION_DENIED') throw new Error(`écriture refusée : l'adresse ${email} n'est pas vérifiée ou n'est pas autorisée dans les règles Firestore`);
       throw e;
     });
     return version;
@@ -129,18 +161,24 @@ function client(env = process.env) {
       .slice(0, n);
   }
 
-  return { config, base, connexion, lire, ecrire, historique };
+  return { config, base, connexion, inscription, lire, ecrire, historique };
 }
 
 // ---------- Ligne de commande ----------
 async function principal(argv) {
   const [commande, fichier] = argv.filter((a) => !a.startsWith('--'));
   const oui = argv.includes('--oui');
-  if (!commande || !['lire', 'fusionner', 'remplacer', 'modifier', 'historique'].includes(commande)) {
-    console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 21).join('\n').replace(/^ \* ?/gm, ''));
+  if (!commande || !['lire', 'fusionner', 'remplacer', 'modifier', 'historique', 'inscription'].includes(commande)) {
+    console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 22).join('\n').replace(/^ \* ?/gm, ''));
     return 1;
   }
   const c = client();
+  if (commande === 'inscription') {
+    const r = await c.inscription();
+    console.log(`Compte ${r.email} ${r.cree ? 'créé' : 'déjà existant'} sur ${c.config.projectId}.`);
+    console.log(r.verifie ? 'Adresse déjà vérifiée.' : `E-mail de vérification envoyé à ${r.email} : cliquez sur le lien qu'il contient.`);
+    return 0;
+  }
   const { email } = await c.connexion();
   console.log(`Connecté à ${c.config.projectId} (base « ${c.base} ») en tant que ${email}.`);
   const actuel = await c.lire();
