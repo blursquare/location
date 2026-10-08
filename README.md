@@ -84,6 +84,14 @@ Google n'accepte pas la connexion depuis un fichier ouvert directement (`file://
 
 Les PDF scannés (images sans texte) ne peuvent pas être lus : les montants se saisissent alors à la main dans l'écran de vérification.
 
+### Contrôle après import (`outils/verifier-imports.js`)
+
+Chaque opération importée depuis Gmail garde sa source (`gmail:<id du message>:<nom du PDF>`). L'outil en ligne de commande contrôle celles qui ne sont pas encore marquées comme vérifiées (mêmes variables d'environnement que `firebase-maj.js`) :
+
+- `node outils/verifier-imports.js liste` : documents importés à vérifier et leurs opérations (JSON) ;
+- `node outils/verifier-imports.js controle [dossier]` : cohérence (loyer hors bail ou avant l'achat, plus encaissé que dû, doublons, date peu plausible, part récupérable supérieure au montant…) et, si un dossier contenant les PDF (`<id message>__<nom>`) est donné, relecture de chaque PDF et comparaison avec ce qui a été importé (`npm install --no-save pdfjs-dist@3.11.174` ou `PDFJS_DIR`) ;
+- `node outils/verifier-imports.js valider [source…]` : marque les documents comme vérifiés.
+
 ## Importer des opérations (syndic, gérance)
 
 *Paramètres → Importer des opérations* ajoute des charges et des encaissements **sans écraser** les données existantes. Chaque opération porte une `source` unique (ex. identifiant du mail d'origine) : un même fichier importé deux fois ne crée pas de doublon.
