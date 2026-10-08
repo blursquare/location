@@ -791,7 +791,7 @@
       .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
       .map((p) => {
         const b = bailById(p.bailId) || {};
-        const nature = p.nature === 'regularisation' ? `<span class="badge st-part">Régul. charges ${h(p.regulAnnee || '')}</span> ` : p.nature === 'teom' ? `<span class="badge st-part">TEOM ${h(p.regulAnnee || '')}</span> ` : p.nature === 'divers' ? '<span class="badge st-future">Divers</span> ' : '';
+        const nature = p.nature === 'regularisation' ? `<span class="badge st-part">Régul. charges ${h(p.regulAnnee || '')}</span> ` : p.nature === 'teom' ? `<span class="badge st-part">TEOM ${h(p.regulAnnee || '')}</span> ` : p.nature === 'divers' ? '<span class="badge st-future">Divers</span> ' : p.nature === 'abandon' ? '<span class="badge st-due">Créance soldée sans paiement</span> ' : '';
         return `<tr><td>${dateFr(p.date)}</td><td>${h(b.locataire || '?')}</td><td>${nature}${periodeLabel(p.periode)}</td><td>${h(p.mode || '')}</td>
           <td class="num">${eur(p.montant)}</td><td>${h(p.note || '')}</td>
           <td><button class="link" data-act="editPaiement" data-id="${p.id}">Modifier</button>
@@ -811,7 +811,7 @@
     const e = C.situationBail(b, db.paiements, d.periode, d.periode)[0];
     const pays = db.paiements.filter((p) => p.bailId === b.id && p.periode === d.periode);
     const list = pays.length
-      ? `<ul>${pays.map((p) => `<li>${dateFr(p.date)} — ${eur(p.montant)} (${h(p.mode || '')})${p.nature === 'regularisation' ? ' — régularisation des charges' : p.nature === 'teom' ? ' — TEOM' : ''}</li>`).join('')}</ul>`
+      ? `<ul>${pays.map((p) => `<li>${dateFr(p.date)} — ${eur(p.montant)} (${h(p.mode || '')})${p.nature === 'regularisation' ? ' — régularisation des charges' : p.nature === 'teom' ? ' — TEOM' : p.nature === 'abandon' ? ' — créance soldée sans paiement' : ''}</li>`).join('')}</ul>`
       : '<p class="muted">Aucun paiement enregistré.</p>';
     openForm(
       `${b.locataire} — ${periodeLong(d.periode)}`,
