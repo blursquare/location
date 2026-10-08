@@ -116,3 +116,97 @@ test('relevé de gérance multi-biens', () => {
   ]);
   assert.deepEqual(X.extraireGeranceMulti(CRG_MULTI, [{ id: 'x', motifs: ['martin'] }]), []);
 });
+
+test('relevé de gérance découpé par lots (plusieurs biens et plusieurs mois)', () => {
+  const texte = `RELEVÉ DE GÉRANCE
+LA CHAUSSEE ST VICTOR, le 20/10/2025
+Lot N°012101 / Mandat N°16 Adresse : Résidence Les Tilleuls Appt B 01 2, rue des Lilas
+DUPONT Éric (01210101) depuis le 25/09/2024
+Règlements Début Fin Dépenses Recettes
+LOYER 01/09/2025 30/09/2025 0,00 470,00
+PROVISIONS SUR CHARGES 01/09/2025 30/09/2025 0,00 70,00
+LOYER 01/10/2025 31/10/2025 0,00 474,89
+PROVISIONS SUR CHARGES 01/10/2025 31/10/2025 0,00 70,00
+Assurances Début Dépenses Recettes
+Assurance Garantie Loyers Impayés 01/09/2025 13,50 0,00
+Assurance Garantie Loyers Impayés 01/10/2025 13,62 0,00
+Factures liées au lot Début Fin Dépenses Recettes
+délesteur-2arc 18/09/2025 513,19 0,00
+Total du Lot N°012101 540,31 1 084,89
+Lot N°012102 / Mandat N°367 Adresse : 12 Rue Descartes Appartement A108
+MARTIN Lou (01210201) depuis le 22/09/2025
+Règlements Début Fin Dépenses Recettes
+LOYER 22/09/2025 30/09/2025 0,00 169,50
+PROVISIONS SUR CHARGES 22/09/2025 30/09/2025 0,00 19,50
+Factures liées au lot Début Fin Dépenses Recettes
+Hono mise en place GLI 18/09/2025 48,00 0,00
+Total du Lot N°012102 48,00 189,00
+Totaux 588,31 1 273,89
+Honoraires T.T.C. 91,72
+A vous verser 593,86 €`;
+  assert.equal(X.detecterType(texte, 'Reddition6273.pdf'), 'gerance');
+  const r = X.extraire(texte, 'gerance');
+  assert.equal(r.lots.length, 2);
+  assert.equal(r.date, '2025-10-20');
+  assert.equal(r.net, 593.86);
+  const [a, b] = r.lots;
+  assert.deepEqual(a.mois, [{ periode: '2025-09', loyer: 470, provisions: 70 }, { periode: '2025-10', loyer: 474.89, provisions: 70 }]);
+  assert.deepEqual(a.assurances, { '2025-09': 13.5, '2025-10': 13.62 });
+  assert.deepEqual(a.factures, [{ libelle: 'délesteur-2arc', date: '2025-09-18', montant: 513.19 }]);
+  assert.equal(a.recettes, 1084.89); // le n° de lot n'est pas pris pour un montant
+  assert.equal(a.depenses, 540.31);
+  assert.deepEqual(b.factures.map((f) => f.montant), [48]); // facture « GLI » : pas une cotisation d'assurance
+  assert.deepEqual(b.assurances, {});
+  assert.equal(Math.round((a.honoraires + b.honoraires) * 100) / 100, 91.72);
+  assert.equal(a.honoraires, 78.11); // au prorata des recettes
+});
+
+test('appel de fonds par rubriques : charges courantes, travaux votés, fonds ALUR', () => {
+  const texte = `PROVISIONS
+Copropriété : LES TILLEULS
+Orléans, le 29/06/2026
+Base de calcul Date édition Période Références Exigible le Avance trésorerie 0,00
+Budget 29/06/2026 01/07/2026 - 30/09/2026 S.1624.00004 01/07/2026
+Appel n°3 : CHARGES COURANTES
+CHARGES COMMUNES GENERALES 5.293,45 9989 136 72,09
+Total du groupe de lots 196,22
+Total appel Copropriétaire 196,22
+Appel n°1 : POSE VIDEO-SURVEILLANCE
+POSE VIDEO-SURVEILLANCE 2.637,94 9989 136 35,91
+Total appel Copropriétaire 35,91
+Appel n°2 : Fonds pour travaux ALUR
+CHARGES COMMUNES GENERALES 1.225,00 10000 103 12,62
+Total appel Copropriétaire 12,62
+Total des appels 244,75`;
+  const r = X.extraireAppel(texte);
+  assert.equal(r.total, 244.75);
+  assert.equal(r.fondsTravaux, 12.62);
+  assert.deepEqual(r.travauxVotes, { montant: 35.91, libelle: 'pose video-surveillance' });
+  assert.deepEqual(r.trimestre, { n: 3, annee: 2026 });
+  assert.equal(r.travaux, false);
+});
+
+test('appel de fonds : part locative, fonds ALUR en colonne, pas de date à 2 chiffres', () => {
+  const texte = `Carte professionnelle délivrée par la CCI le 23/05/17
+Appel de Fonds
+Blois, le 23/06/2026
+Période du 01/07/2026 au 30/09/2026
+Postes à répartir Total Base Tantièmes Quote-part Locatif
+GENERALES 28 625,25 10 000 94 269,08 145,26
+FONDS TRAVAUX ALUR 1 818,00 10 000 94 17,09 0,00
+Montant de l'appel de fonds 393,57 €
+Locatif : 237,56 Solde antérieur 4,85`;
+  const r = X.extraireAppel(texte);
+  assert.equal(r.total, 393.57);
+  assert.equal(r.fondsTravaux, 17.09);
+  assert.equal(r.recuperable, 237.56);
+  assert.equal(r.date, '2026-07-01');
+});
+
+test('documents à ne pas importer comme appels ou relevés', () => {
+  assert.equal(X.detecterType('DECOMPTE DE CHARGES DEFINITIF 2025 copropriété', '2025DEC.pdf'), 'decompte');
+  assert.equal(X.detecterType('Regularisation charges courantes au 31/03/2026', 'RG_CC.pdf'), 'decompte');
+  assert.equal(X.detecterType('Historique des redditions', 'HistoriqueReddition_2026.pdf'), 'recap');
+  assert.equal(X.detecterType('Facture n° 2025-281 honoraires', 'Fac 2025-281 - Honoraires.pdf'), 'facture');
+  assert.equal(X.extraire('x', 'decompte').type, 'decompte');
+});

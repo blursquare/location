@@ -168,7 +168,9 @@
           res.blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
           const texte = await textePdf(bytes);
           res.texte = texte;
-          const type = regle.type && regle.type !== 'auto' ? regle.type : Extract.detecterType(texte + '\n' + res.sujet, piece.nom) || 'appel';
+          // Décomptes annuels, récapitulatifs et factures jointes sont signalés quel que soit le type de la règle.
+          const detecte = Extract.detecterType(texte + '\n' + res.sujet, piece.nom);
+          const type = ['decompte', 'recap', 'facture'].includes(detecte) ? detecte : regle.type && regle.type !== 'auto' ? regle.type : detecte || 'appel';
           res.extraction = Extract.extraire(texte, type, piece.nom);
           if (!texte.trim()) res.erreur = 'PDF sans texte (document scanné ?) : saisissez les montants à la main.';
         } catch (e) {

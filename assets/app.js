@@ -1719,25 +1719,76 @@
     return s;
   }
   const sansAcc = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
-  /** Indices permettant de reconnaître un bien dans un PDF : rue, résidence, lot, nom du locataire. */
+  /**
+   * Indices permettant de reconnaître un bien dans un PDF, avec leur poids : nom du locataire et
+   * numéro d'appartement ou de lot (spécifiques) comptent plus que la rue ou la résidence, que
+   * plusieurs biens d'une même copropriété partagent.
+   */
   function reperesBien(b) {
-    const motifs = [sansAcc(b.adresse).split(',')[0], b.copropriete, b.nom];
-    if (b.lot) motifs.push(`lot ${String(b.lot).split(/[ ,+]/)[0]}`);
+    const motifs = [];
+    const ajout = (m, poids, re) => m && sansAcc(m).length >= 3 && motifs.push({ m: sansAcc(m), poids, re });
+    ajout(sansAcc(b.adresse).split(',')[0], 1);
+    ajout(b.copropriete, 1);
+    ajout(b.nom, 2);
+    // Numéro d'appartement tiré du nom (« B01 », « A108 », « 13b ») : « B 01 », « A1-013b »…
+    for (const code of String(b.nom || '').match(/\b(?:[A-Za-z]{1,2}\s?\d{1,4}[A-Za-z]?|\d{1,4}[A-Za-z])\b/g) || []) {
+      const c = sansAcc(code).replace(/\s/g, '');
+      const [, lettres, chiffres, fin] = c.match(/^([a-z]*)(\d+)([a-z]?)$/) || [];
+      if (chiffres === undefined) continue;
+      ajout(c, 3, new RegExp(`(?<![a-z0-9])${lettres}\\s?0*${Number(chiffres)}${fin}(?![0-9a-z])`));
+    }
+    for (const n of String(b.lot || '').match(/\d{3,}/g) || []) ajout(n, 3, new RegExp(`(?<!\\d)${n}(?!\\d)`));
     for (const bail of db.baux.filter((x) => x.bienId === b.id)) {
       const noms = sansAcc(bail.locataire).split(/\s+/).filter((m) => m.length >= 4);
-      if (noms.length) motifs.push(noms[noms.length - 1]);
+      if (noms.length) ajout(noms[noms.length - 1], 4, new RegExp(`\\b${noms[noms.length - 1]}\\b`));
     }
-    return { id: b.id, motifs: motifs.filter((m) => m && sansAcc(m).length >= 5) };
+    return { id: b.id, motifs };
+  }
+  /** Bien le plus probable pour un texte (score des indices trouvés) ; null en cas d'égalité ou d'absence. */
+  function scoreBien(texte, candidats) {
+    const t = sansAcc(texte);
+    const scores = (candidats || db.biens).map((b) => ({
+      id: b.id,
+      score: reperesBien(b).motifs.reduce((s, x) => s + ((x.re ? x.re.test(t) : t.includes(x.m)) ? x.poids : 0), 0),
+    }));
+    scores.sort((x, y) => y.score - x.score);
+    if (!scores.length || !scores[0].score || (scores[1] && scores[1].score === scores[0].score)) return null;
+    return scores[0].id;
   }
   function devinerBien(texte, defaut, candidats) {
-    const t = sansAcc(texte);
-    const trouve = (candidats || db.biens).find((b) => reperesBien(b).motifs.some((m) => t.includes(sansAcc(m))));
-    return (trouve || bienById(defaut) || (candidats || db.biens)[0] || {}).id || '';
+    return scoreBien(texte, candidats) || (bienById(defaut) || (candidats || db.biens)[0] || {}).id || '';
   }
+  const NOTES_DOC = {
+    decompte: "Décompte ou régularisation annuelle du syndic : à reporter dans Régularisation → Décomptes du syndic (charges réelles et part récupérable), pas comme un appel de fonds.",
+    recap: "Récapitulatif annuel de l'agence (aide à la déclaration) : les montants sont déjà dans les relevés mensuels.",
+    facture: 'Facture jointe à un relevé de gérance : elle y est déjà comptée.',
+  };
   function lignesProposees(doc, regle) {
     const e = doc.extraction || {};
+    if (NOTES_DOC[e.type]) return [{ type: 'note', texte: NOTES_DOC[e.type] }];
     if (e.type === 'gerance') {
       const candidats = db.biens.filter((b) => b.gestionMode === 'agence' && (!regle.gestionnaireId || b.gestionnaireId === regle.gestionnaireId));
+      const pool = candidats.length ? candidats : db.biens;
+      if (e.lots) {
+        // Relevé découpé par lots : une ligne par bien et par mois, une ligne par facture imputée.
+        const lignes = [];
+        for (const lot of e.lots) {
+          const bienId = devinerBien(lot.texte, regle.bienId, pool);
+          const mois = lot.mois.length ? lot.mois : [{ periode: Object.keys(lot.assurances)[0] || doc.dateMail.slice(0, 7), loyer: 0, provisions: 0 }];
+          const glis = { ...lot.assurances };
+          // Honoraires du relevé portés sur le dernier mois (comme l'agence les prélève).
+          mois.forEach((m, k) => {
+            const hono = k === mois.length - 1 ? lot.honoraires || 0 : 0;
+            lignes.push({ type: 'gerance', bienId, periode: m.periode, date: e.date || doc.dateMail, encaisse: Math.round((m.loyer + m.provisions) * 100) / 100, honoraires: hono || null, assurance: glis[m.periode] || null });
+            delete glis[m.periode];
+          });
+          for (const [periode, montant] of Object.entries(glis)) lignes.push({ type: 'gerance', bienId, periode, date: e.date || doc.dateMail, encaisse: null, honoraires: null, assurance: montant });
+          for (const f of lot.factures) {
+            lignes.push({ type: 'charge', bienId, date: f.date || e.date || doc.dateMail, libelle: f.libelle, categorie: /hono|frais|gestion|location|etat\s+des\s+lieux|edl/i.test(sansAcc(f.libelle)) ? 'gestion' : 'travaux', montant: f.montant, partRecuperable: 0 });
+          }
+        }
+        if (lignes.length) return lignes;
+      }
       const ligne = (x, bienId) => ({
         type: 'gerance',
         bienId,
@@ -1748,7 +1799,7 @@
         assurance: x.assurance,
         net: x.net,
       });
-      const multi = doc.texte ? Extract.extraireGeranceMulti(doc.texte, (candidats.length ? candidats : db.biens).map(reperesBien)) : [];
+      const multi = doc.texte ? Extract.extraireGeranceMulti(doc.texte, pool.map((b) => ({ id: b.id, motifs: reperesBien(b).motifs.filter((x) => x.poids >= 3).map((x) => x.m) }))) : [];
       if (multi.length) return multi.map((x) => ligne(x, x.bienId));
       return [ligne(e, devinerBien(doc.texte, regle.bienId, candidats.length ? candidats : null))];
     }
@@ -1758,18 +1809,47 @@
     const montant = e.total !== null && e.total !== undefined ? Math.round((e.total - (e.fondsTravaux || 0)) * 100) / 100 : null;
     const tri = e.trimestre;
     const an = (tri && tri.annee) || Number((e.date || doc.dateMail).slice(0, 4));
+    const tv = e.travauxVotes && montant !== null && e.travauxVotes.montant < montant ? e.travauxVotes : null;
+    const courant = tv ? Math.round((montant - tv.montant) * 100) / 100 : montant;
+    const recup = e.travaux ? 0 : e.recuperable !== null && e.recuperable !== undefined && courant !== null && e.recuperable <= courant ? e.recuperable : courant !== null ? Math.round(courant * pctR) / 100 : 0;
+    if (tv && !e.travaux) {
+      // Charges courantes et travaux votés en AG appelés ensemble : deux charges distinctes.
+      return [
+        { type: 'appel', bienId, date: e.date || doc.dateMail, libelle: tri ? `Appel de fonds T${tri.n} ${an}` : `Appel de fonds — ${doc.sujet || doc.fichier}`, categorie: 'copro', montant: courant, partRecuperable: recup, fondsTravaux: e.fondsTravaux },
+        { type: 'appel', bienId, date: e.date || doc.dateMail, libelle: `Travaux votés — ${tv.libelle}`, categorie: 'copro_travaux', montant: tv.montant, partRecuperable: 0, fondsTravaux: null },
+      ];
+    }
     return [
       {
         type: 'appel',
         bienId,
         date: e.date || doc.dateMail,
-        libelle: tri ? `Appel de fonds T${tri.n} ${an}` : e.travaux ? `Appel de fonds travaux ${an}` : `Appel de fonds — ${doc.sujet || doc.fichier}`,
+        libelle: e.travaux ? `Appel de fonds travaux — ${doc.sujet || doc.fichier}` : tri ? `Appel de fonds T${tri.n} ${an}` : `Appel de fonds — ${doc.sujet || doc.fichier}`,
         categorie: e.travaux ? 'copro_travaux' : 'copro',
         montant,
-        partRecuperable: montant !== null && !e.travaux ? Math.round(montant * pctR) / 100 : 0,
+        partRecuperable: recup,
         fondsTravaux: e.fondsTravaux,
       },
     ];
+  }
+  /** Opérations d'un document déjà présentes dans la base (saisies à la main ou importées ailleurs). */
+  function etatDoublons(doc) {
+    let total = 0;
+    let deja = 0;
+    for (const l of doc.lignes) {
+      if (l.type === 'note') continue;
+      const ops = Extract.operationsDepuis(l.type, doc.source, l);
+      for (const c of ops.charges) {
+        total++;
+        if (C.chargeExistante(db, c.bien, c)) deja++;
+      }
+      for (const p of ops.paiements) {
+        total++;
+        const bail = C.bailActif(db, p.bien, p.periode);
+        if (!bail || C.paiementExistant(db, bail.id, p)) deja++;
+      }
+    }
+    return { total, deja };
   }
 
   const champsRegle = () => [
@@ -1836,9 +1916,17 @@
         <td rowspan="${n}"><b>${h(d.fichier)}</b><div class="small muted">${h(d.sujet)}<br>${dateFr(d.dateMail)} — ${h(d.expediteur)}</div>
         <div class="small">${d.blobUrl ? `<a href="${d.blobUrl}" target="_blank" rel="noopener">Voir le PDF</a> · ` : ''}<a href="${h(d.lienMail)}" target="_blank" rel="noopener">Voir l'e-mail</a></div>
         ${d.erreur ? `<div class="small neg">${h(d.erreur)}</div>` : ''}<span class="badge ${conf[(d.extraction || {}).confiance] || 'st-due'}">lecture ${h((d.extraction || {}).confiance || 'faible')}</span>
-        ${d.lignes[0].type === 'gerance' ? `<div><button class="link" data-act="gmailAjoutLigne" data-i="${i}">+ répartir sur un autre bien</button></div>` : ''}</td>`;
+        ${d.statut ? `<div><span class="badge st-future">${h(d.statut)}</span></div>` : ''}
+        ${d.lignes[0].type === 'gerance' && d.lignes.length === 1 ? `<div><button class="link" data-act="gmailAjoutLigne" data-i="${i}">+ répartir sur un autre bien</button></div>` : ''}</td>`;
       return d.lignes.map((p, j) => {
         const tete = j === 0 ? ent : '';
+        if (p.type === 'note') return `<tr>${tete}<td colspan="3" class="small">${h(p.texte)}</td></tr>`;
+        if (p.type === 'charge') {
+          return `<tr>${tete}<td><select data-gd="${i}" data-l="${j}" data-k="bienId">${opt(p.bienId, db.biens)}</select></td>
+            <td>Facture imputée<br>${inp(i, j, 'date', p.date, 'date')}<br>${inp(i, j, 'libelle', p.libelle, 'text')}</td>
+            <td><label class="small muted">Montant${inp(i, j, 'montant', p.montant)}</label>
+            <label class="small muted">Catégorie<select data-gd="${i}" data-l="${j}" data-k="categorie">${Object.entries(C.CATEGORIES).map(([k, v]) => `<option value="${k}" ${k === p.categorie ? 'selected' : ''}>${h(v.label)}</option>`).join('')}</select></label></td></tr>`;
+        }
         if (p.type === 'gerance') {
           return `<tr>${tete}<td><select data-gd="${i}" data-l="${j}" data-k="bienId">${opt(p.bienId, db.biens)}</select></td>
             <td>Relevé de gérance<br>${inp(i, j, 'periode', p.periode, 'month')}</td>
@@ -1925,12 +2013,30 @@
     try {
       await GmailSource.connecter(g.clientId);
       const connues = sourcesConnues();
+      const empreintes = new Set();
       for (const regle of g.regles) {
         const docs = await GmailSource.chercher(regle, connues, log);
         for (const d of docs) {
           connues.add(d.source);
           d.lignes = lignesProposees(d, regle);
-          d.action = d.erreur || (d.extraction || {}).confiance === 'faible' ? 'plus-tard' : 'importer';
+          const empreinte = `${d.fichier}|${JSON.stringify(d.lignes)}`;
+          const e = d.extraction || {};
+          if (empreintes.has(empreinte)) {
+            d.statut = "Même document qu'un autre e-mail";
+            d.action = 'ignorer';
+          } else if (d.lignes[0].type === 'note') {
+            d.action = e.type === 'decompte' ? 'plus-tard' : 'ignorer';
+          } else {
+            const dbl = etatDoublons(d);
+            if (dbl.total && dbl.deja === dbl.total) {
+              d.statut = 'Déjà saisi';
+              d.action = 'ignorer';
+            } else {
+              if (dbl.deja) d.statut = `${dbl.deja} opération(s) sur ${dbl.total} déjà saisie(s), non réimportée(s)`;
+              d.action = d.erreur || e.confiance === 'faible' ? 'plus-tard' : 'importer';
+            }
+          }
+          empreintes.add(empreinte);
           gmailDocs.push(d);
         }
       }
@@ -1952,8 +2058,9 @@
         ignores++;
       }
       if (d.action !== 'importer') continue;
-      for (const l of d.lignes) {
-        const ops = Extract.operationsDepuis(l.type, d.lignes.length > 1 ? `${d.source}#${l.bienId}` : d.source, l);
+      for (const [j, l] of d.lignes.entries()) {
+        if (l.type === 'note') continue;
+        const ops = Extract.operationsDepuis(l.type, d.lignes.length > 1 ? `${d.source}#${l.bienId}:${l.periode || l.date || ''}:${j}` : d.source, l);
         imp.charges.push(...ops.charges);
         imp.paiements.push(...ops.paiements);
       }

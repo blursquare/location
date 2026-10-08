@@ -28,7 +28,11 @@
 
   function montantsDe(ligne) {
     // On ignore les dates (12/03/2026) et pourcentages pour ne pas les confondre avec des montants
-    const propre = ligne.replace(/\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}/g, ' ').replace(/\d+(?:[,.]\d+)?\s?%/g, ' ');
+    // ainsi que les numéros (« Lot N°012101 ») qui se colleraient au montant suivant.
+    const propre = ligne
+      .replace(/\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}/g, ' ')
+      .replace(/\d+(?:[,.]\d+)?\s?%/g, ' ')
+      .replace(/\bn\s*[°o]\s*\d+/gi, ' ');
     return (propre.match(RE_MONTANT) || []).map(parseMontant).filter((x) => x !== null);
   }
 
@@ -76,22 +80,31 @@
     }
     const reLong = new RegExp(`\\b(1er|\\d{1,2})\\s+(${MOIS.join('|')})\\s+(\\d{4})`, 'g');
     for (const m of t.matchAll(reLong)) {
-      out.push({ iso: toISO(m[1] === '1er' ? 1 : m[1], MOIS.indexOf(m[2]) + 1, m[3]), index: m.index });
+      out.push({ iso: toISO(m[1] === '1er' ? 1 : m[1], MOIS.indexOf(m[2]) + 1, m[3]), index: m.index, longue: true });
     }
     return out.sort((a, b) => a.index - b.index);
   }
 
-  /** Date suivant un mot-clé (échéance, exigible…) sinon première date du document. */
+  /**
+   * Date suivant un mot-clé (échéance, exigible…) : sur la même ligne, ou dans la ligne suivante
+   * quand le mot-clé est un en-tête de tableau (dernière date de cette ligne). À défaut, première
+   * date du document écrite avec l'année sur 4 chiffres.
+   */
   function dateApres(texte, motifs) {
     const t = sansAccents(texte).toLowerCase();
     const ds = dates(texte);
     for (const re of motifs) {
       const m = re.exec(t);
       if (!m) continue;
-      const d = ds.find((x) => x.index >= m.index && x.index - m.index < 80);
+      const finLigne = t.indexOf('\n', m.index) < 0 ? t.length : t.indexOf('\n', m.index);
+      const d = ds.find((x) => x.index >= m.index && x.index < finLigne && x.index - m.index < 80);
       if (d) return d.iso;
+      const finSuivante = t.indexOf('\n', finLigne + 1) < 0 ? t.length : t.indexOf('\n', finLigne + 1);
+      const suivante = ds.filter((x) => x.index > finLigne && x.index < finSuivante);
+      if (suivante.length) return suivante[suivante.length - 1].iso;
     }
-    return ds.length ? ds[0].iso : null;
+    const longues = ds.filter((x) => /\d{4}/.test(t.slice(x.index, x.index + 10).split(/\s/)[0]) || x.longue);
+    return (longues[0] || ds[0] || {}).iso || null;
   }
 
   /** Période AAAA-MM d'un relevé mensuel (« mois d'octobre 2026 », « période du 01/10/2026 au 31/10/2026 »…). */
@@ -114,6 +127,8 @@
     if (m) return { n: Number(m[1]), annee: m[2] ? Number(m[2]) : null };
     m = t.match(/\bt([1-4])\s*[-/ ]?\s*(\d{4})\b/);
     if (m) return { n: Number(m[1]), annee: Number(m[2]) };
+    m = t.match(/\b01[/.-](01|04|07|10)[/.-](\d{4})\s*(?:-|au|a)\s*(?:30|31)[/.-](03|06|09|12)[/.-]\2\b/);
+    if (m && Number(m[3]) === Number(m[1]) + 2) return { n: (Number(m[1]) + 2) / 3, annee: Number(m[2]) };
     return null;
   }
 
@@ -124,26 +139,89 @@
       .filter(Boolean);
 
   // ---------- Appel de fonds ----------
+  const RE_FONDS_TRAVAUX = /fonds\s+(?:de\s+|pour\s+)?travaux|cotisation\s+alur|fonds\s+alur|art(?:icle)?\.?\s*14-2/i;
   function extraireAppel(texte) {
     const lignes = lignesDe(texte);
+    // Montant global de l'appel (fonds travaux compris), puis à défaut les formulations par lot.
     const total = montantApres(lignes, [
-      /total\s+(?:de\s+l'?\s*)?appel/i,
-      /montant\s+(?:de\s+l'?\s*)?appel/i,
+      /total\s+des\s+appels/i,
+      /montant\s+de\s+(?:votre|l'?\s*)\s*appel/i,
       /(?:net|total|montant|solde)\s+a\s+(?:payer|regler|verser)/i,
+      /total\s+(?:de\s+l'?\s*)?appel/i,
       /vous\s+(?:devez|reste)/i,
       /total\s+(?:general|ttc|du)/i,
       /^total\b/i,
-    ], { exclure: /fonds\s+(?:de\s+)?travaux|alur/i });
-    const fondsTravaux = sommeLignes(lignes, /fonds\s+(?:de\s+)?travaux|cotisation\s+alur|fonds\s+alur|art(?:icle)?\.?\s*14-2/i, /total/i);
-    const date = dateApres(texte, [/exigib/, /echeance/, /date\s+limite/, /avant\s+le/, /a\s+regler\s+(?:le|pour)/, /appel\s+du/]);
+    ], { exclure: RE_FONDS_TRAVAUX });
+    // Fonds travaux : lignes détaillées, ou section « Fonds pour travaux ALUR » close par un total.
+    let fondsTravaux = null;
+    for (let i = 0; i < lignes.length; i++) {
+      const l = sansAccents(lignes[i]);
+      if (!RE_FONDS_TRAVAUX.test(l) || montantsDe(lignes[i]).length) continue;
+      for (let j = i + 1; j < Math.min(lignes.length, i + 12); j++) {
+        if (/^total\s+(?:appel|du\s+groupe)/i.test(sansAccents(lignes[j])) && montantsDe(lignes[j]).length) {
+          fondsTravaux = montantsDe(lignes[j]).pop();
+          break;
+        }
+      }
+      if (fondsTravaux !== null) break;
+    }
+    if (fondsTravaux === null) {
+      // Tableau à colonnes « Quote-part | Locatif » : la quote-part est l'avant-dernier montant.
+      const avecLocatif = lignes.some((l) => /quote-?\s?part\s+locatif/i.test(sansAccents(l)));
+      let somme = 0;
+      let vu = false;
+      for (const l of lignes) {
+        if (!RE_FONDS_TRAVAUX.test(sansAccents(l)) || /total|appel\s+n|solde/i.test(sansAccents(l))) continue;
+        const ms = montantsDe(l);
+        if (!ms.length) continue;
+        somme += avecLocatif && ms.length >= 3 ? ms[ms.length - 2] : ms[ms.length - 1];
+        vu = true;
+      }
+      fondsTravaux = vu ? Math.round(somme * 100) / 100 : null;
+    }
+    // Part récupérable sur le locataire quand le syndic l'indique (« Locatif : 237,56 »).
+    let recuperable = null;
+    for (const l of lignes) {
+      const m = sansAccents(l).match(/^locatif\s*:?\s*(-?[\d\s.]+[,.]\d{2})/i);
+      if (m) {
+        recuperable = parseMontant(m[1]);
+        break;
+      }
+    }
+    if (recuperable === null) recuperable = montantApres(lignes, [/(?:dont|part)\s+(?:charges\s+)?(?:recuperables?|locatives?)/i, /charges\s+recuperables/i], { exclure: /non\s+locat/i });
+    // Appels découpés en rubriques (« Appel n°3 : CHARGES COURANTES » … « Total appel Copropriétaire ») :
+    // les travaux votés en AG sont isolés des charges courantes et du fonds travaux.
+    const sections = [];
+    for (let i = 0; i < lignes.length; i++) {
+      const m = lignes[i].match(/^appel\s+n\s*°?\s*\d+\s*:\s*(.+)$/i);
+      if (!m) continue;
+      for (let j = i + 1; j < Math.min(lignes.length, i + 25); j++) {
+        if (/^appel\s+n\s*°?\s*\d+\s*:/i.test(lignes[j])) break;
+        if (/^total\s+appel/i.test(sansAccents(lignes[j])) && montantsDe(lignes[j]).length) {
+          sections.push({ titre: m[1].trim(), montant: montantsDe(lignes[j]).pop() });
+          break;
+        }
+      }
+    }
+    let travauxVotes = null;
+    if (sections.length) {
+      const votes = sections.filter((x) => !RE_FONDS_TRAVAUX.test(sansAccents(x.titre)) && !/courantes|budget|provisions?|fonctionnement/i.test(sansAccents(x.titre)));
+      const montantVotes = Math.round(votes.reduce((t, x) => t + x.montant, 0) * 100) / 100;
+      if (votes.length && montantVotes) travauxVotes = { montant: montantVotes, libelle: votes.map((x) => x.titre.toLowerCase()).join(', ') };
+    }
+    const date = dateApres(texte, [/exigib/, /echeance/, /date\s+limite/, /avant\s+le/, /a\s+regler\s+(?:le|pour)/, /periode\s+du/, /appel\s+du/]);
     const tri = trimestre(texte);
     const t = sansAccents(texte).toLowerCase();
-    const travaux = /travaux\s+votes|appel\s+(?:de\s+fonds\s+)?travaux|ag\s+du/.test(t) && !/budget\s+previsionnel/.test(t);
+    const travaux =
+      (/travaux\s+votes|appel\s+(?:de\s+fonds\s+)?travaux|charges\s+travaux|appel\s+n\s*°?\s*\d+\s*:\s*travaux|\bag\s*\d{2}\s+r\d|ag\s+du/.test(t)) &&
+      !/budget\s+previsionnel|charges\s+courantes|charges\s+de\s+fonctionnement/.test(t);
     const champs = [total, date].filter((x) => x !== null).length;
     return {
       type: 'appel',
       total,
       fondsTravaux,
+      recuperable,
+      travauxVotes,
       date,
       trimestre: tri,
       travaux,
@@ -187,7 +265,71 @@
   }
 
   /**
-   * Relevé de gérance couvrant plusieurs biens (un relevé par mandant / SCI).
+   * Relevé de gérance découpé par lots (« Lot N°… / Mandat N°… » … « Total du Lot N°… ») :
+   * un relevé peut regrouper plusieurs biens et plusieurs mois. Pour chaque lot : loyers et
+   * provisions par mois, garantie loyers impayés par mois, factures imputées, total des recettes.
+   * Les honoraires TTC, globaux, sont répartis au prorata des recettes de chaque lot.
+   * Retourne null si le document n'est pas découpé par lots.
+   */
+  function extraireReleveLots(texte) {
+    const lignes = lignesDe(texte);
+    const debuts = [];
+    lignes.forEach((l, i) => {
+      if (/^lot\s+n\s*[°o]/i.test(sansAccents(l))) debuts.push(i);
+    });
+    if (!debuts.length || !lignes.some((l) => /^total\s+du\s+lot/i.test(sansAccents(l)))) return null;
+    const periodeDe = (l) => {
+      const m = l.match(/\b(\d{2})[/.-](\d{2})[/.-](\d{4})\b/);
+      return m ? `${m[3]}-${m[2]}` : null;
+    };
+    const lots = debuts.map((d, k) => {
+      const bloc = lignes.slice(d, k + 1 < debuts.length ? debuts[k + 1] : lignes.length);
+      const lot = { texte: bloc.join('\n'), mois: {}, assurances: {}, factures: [], recettes: null, depenses: null };
+      let section = '';
+      for (const l of bloc) {
+        const a = sansAccents(l).toLowerCase();
+        if (/^reglements\b/.test(a)) section = 'reglements';
+        else if (/^assurances?\b/.test(a)) section = 'assurances';
+        else if (/^factures?\b|^depenses\b|^travaux\b/.test(a)) section = 'factures';
+        if (/^total\s+du\s+lot/.test(a)) {
+          const ms = montantsDe(l);
+          if (ms.length >= 2) [lot.depenses, lot.recettes] = ms.slice(-2);
+          section = 'fin';
+          continue;
+        }
+        const ms = montantsDe(l);
+        const p = periodeDe(l);
+        if (ms.length < 2 || !p) continue;
+        const [dep, rec] = ms.slice(-2);
+        if (section === 'reglements' && /loyer|provision|charges|complement/.test(a)) {
+          const m = (lot.mois[p] = lot.mois[p] || { periode: p, loyer: 0, provisions: 0 });
+          if (/provision|charges/.test(a)) m.provisions = Math.round((m.provisions + rec - dep) * 100) / 100;
+          else m.loyer = Math.round((m.loyer + rec - dep) * 100) / 100;
+        } else if (section === 'factures') {
+          const date = (dates(l)[0] || {}).iso || null;
+          lot.factures.push({ libelle: l.replace(/\s*\d{2}[/.-]\d{2}[/.-]\d{4}.*$/, '').trim(), date, montant: Math.round((dep - rec) * 100) / 100 });
+        } else if (section === 'assurances' || /garantie|loyers?\s+impayes|\bgli\b/.test(a)) {
+          lot.assurances[p] = Math.round(((lot.assurances[p] || 0) + dep - rec) * 100) / 100;
+        }
+      }
+      lot.mois = Object.values(lot.mois).sort((x, y) => x.periode.localeCompare(y.periode));
+      return lot;
+    });
+    const honoraires = montantApres(lignes, [/honoraires?\s+t\.?\s?t\.?\s?c/i, /honoraires?\s+(?:de\s+gestion\s+)?ttc/i]);
+    const totalRecettes = lots.reduce((t, l) => t + (l.recettes || 0), 0);
+    let reste = honoraires || 0;
+    lots.forEach((l, i) => {
+      if (honoraires === null) return (l.honoraires = null);
+      l.honoraires = i === lots.length - 1 ? Math.round(reste * 100) / 100 : totalRecettes ? Math.round(((honoraires * (l.recettes || 0)) / totalRecettes) * 100) / 100 : 0;
+      reste -= l.honoraires;
+    });
+    const net = montantApres(lignes, [/a\s+vous\s+verser/i, /net\s+a\s+(?:vous\s+)?(?:verser|reverser)/i]);
+    const date = dateApres(texte, [/,\s*le\s+\d/, /vir(?:ement|e)\s+(?:effectue\s+)?le/, /edite\s+le/]);
+    return { type: 'gerance', lots, honoraires, net, date, confiance: lots.every((l) => l.recettes !== null) ? 'bonne' : 'partielle' };
+  }
+
+  /**
+   * Relevé de gérance couvrant plusieurs biens, sans découpage par lots reconnaissable.
    * reperes : [{ id, motifs: ['rue garibaldi', 'bernard', 'lot 7', …] }]
    * Le texte est découpé à la première mention de chaque bien ; chaque section est lue séparément.
    * Retourne [] si moins de deux biens sont repérés (relevé à traiter comme un seul bien).
@@ -218,9 +360,17 @@
     });
   }
 
-  /** Devine le type de document à partir de son texte. */
+  /**
+   * Devine le type de document : 'appel', 'gerance', ou un document à ne pas importer comme tel :
+   * 'decompte' (décompte / régularisation annuelle du syndic), 'recap' (récapitulatif annuel de
+   * l'agence), 'facture' (facture jointe à un relevé, déjà comptée dans celui-ci).
+   */
   function detecterType(texte, nomFichier) {
+    const nom = sansAccents(nomFichier || '').toLowerCase();
     const t = sansAccents(`${nomFichier || ''}\n${texte}`).toLowerCase();
+    if (/historique|revenus\s*fonciers|recapitulatif\s+annuel|declaration\s+des\s+revenus/.test(nom) || /historique\s+des\s+redditions|aide\s+a\s+la\s+declaration/.test(t)) return 'recap';
+    if (/decompte\s+(?:de\s+charges|individuel|definitif|des\s+charges)|regularisation\s+(?:des\s+)?charges|repartition\s+des\s+charges\s+(?:de\s+l'?\s*)?exercice/.test(t) && !/appel\s+de\s+fonds/.test(sansAccents(texte).toLowerCase().slice(0, 400))) return 'decompte';
+    if (/^(?:fac|facture)\b|\bfacture\b/.test(nom) && !/releve\s+de\s+gerance|lot\s+n\s*°/.test(t)) return 'facture';
     const gerance = (t.match(/gerance|compte\s+rendu\s+de\s+gestion|releve\s+de\s+gestion|\bcrg\b|mandant|honoraires\s+de\s+gestion|net\s+proprietaire|reverser/g) || []).length;
     const appel = (t.match(/appel\s+de\s+(?:fonds|charges|provisions)|syndic|coproprie|tantiemes|budget\s+previsionnel|fonds\s+travaux/g) || []).length;
     if (!gerance && !appel) return null;
@@ -229,7 +379,9 @@
 
   function extraire(texte, type, nomFichier) {
     const t = type || detecterType(texte, nomFichier) || 'appel';
-    return t === 'gerance' ? extraireGerance(texte) : extraireAppel(texte);
+    if (t === 'decompte' || t === 'recap' || t === 'facture') return { type: t, confiance: 'bonne' };
+    if (t === 'gerance') return extraireReleveLots(texte) || extraireGerance(texte);
+    return extraireAppel(texte);
   }
 
   /** Reconstitue des lignes de texte à partir des éléments pdf.js (getTextContent). */
@@ -251,11 +403,14 @@
    * Transforme un document vérifié en opérations importables (format de Calc.fusionnerOperations).
    * v (appel)   : { bienId, date, libelle, categorie, montant, partRecuperable, fondsTravaux }
    * v (gérance) : { bienId, periode, date, encaisse, honoraires, assurance }
+   * v (charge)  : { bienId, date, libelle, categorie, montant } (facture imputée par l'agence)
    */
   function operationsDepuis(type, source, v) {
     const n = (x) => Math.round((Number(x) || 0) * 100) / 100;
     const ops = { charges: [], paiements: [] };
-    if (type === 'appel') {
+    if (type === 'charge') {
+      if (n(v.montant)) ops.charges.push({ bien: v.bienId, date: v.date, categorie: v.categorie || 'travaux', libelle: v.libelle, montant: n(v.montant), partRecuperable: n(v.partRecuperable), source });
+    } else if (type === 'appel') {
       if (n(v.montant)) {
         ops.charges.push({ bien: v.bienId, date: v.date, categorie: v.categorie || 'copro', libelle: v.libelle, montant: n(v.montant), partRecuperable: n(v.partRecuperable), source });
       }
@@ -273,13 +428,13 @@
         ops.charges.push({ bien: v.bienId, date, categorie: 'gestion', libelle: `Honoraires de gestion ${v.periode}`, montant: n(v.honoraires), partRecuperable: 0, source: source + ':honoraires' });
       }
       if (n(v.assurance)) {
-        ops.charges.push({ bien: v.bienId, date, categorie: 'assurance_pno', libelle: `Garantie loyers impayés ${v.periode}`, montant: n(v.assurance), partRecuperable: 0, source: source + ':gli' });
+        ops.charges.push({ bien: v.bienId, date: v.periode ? `${v.periode}-01` : date, categorie: 'assurance_pno', libelle: `Garantie loyers impayés ${v.periode}`, montant: n(v.assurance), partRecuperable: 0, source: source + ':gli' });
       }
     }
     return ops;
   }
 
-  const api = { extraireGeranceMulti, operationsDepuis, parseMontant, montantsDe, dates, periodeMensuelle, trimestre, detecterType, extraireAppel, extraireGerance, extraire, lignesPdfJs };
+  const api = { extraireReleveLots, extraireGeranceMulti, operationsDepuis, parseMontant, montantsDe, dates, periodeMensuelle, trimestre, detecterType, extraireAppel, extraireGerance, extraire, lignesPdfJs };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Extract = api;
 })(typeof window !== 'undefined' ? window : globalThis);
