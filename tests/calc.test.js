@@ -268,3 +268,19 @@ test('créance soldée sans paiement : solde le mois sans compter comme revenu',
   assert.equal(s.encaisse, 400);
   assert.equal(Math.round(s.impayes * 100) / 100, 0);
 });
+
+test("prêt : échéancier de la banque (assurance variable) prioritaire sur le calcul", () => {
+  const texte = `  05/11/2026               54473,85                       171,81                       142,99                        7,36                     322,16
+  05/12/2026               54302,04                       172,26                       142,54                        7,36                     322,16
+05/02/2027      53957,07        173,16    141,64          7,60           322,40`;
+  const e = C.lireEcheancier(texte);
+  assert.equal(e.length, 3);
+  assert.deepEqual(e[2], { date: '2027-02-05', crdAvant: 53957.07, capital: 173.16, interets: 141.64, assurance: 7.6 });
+  const p = { capital: 56000, tauxAnnuel: 3.15, dureeMois: 240, dateDebut: '2026-02-05', assuranceMensuelle: 7.36, echeancier: e };
+  const t = C.amortissement(p);
+  const nov = t.find((l) => l.date === '2026-11-05');
+  assert.equal(nov.capital, 171.81);
+  assert.equal(nov.crd, 54302.04);
+  assert.equal(t.find((l) => l.date === '2027-02-05').assurance, 7.6);
+  assert.equal(t.find((l) => l.date === '2026-03-05').assurance, 7.36); // échéance passée : calcul
+});

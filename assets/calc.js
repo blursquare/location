@@ -74,7 +74,38 @@
         crd: round2(Math.max(crd, 0)),
       });
     }
+    // Échéancier fourni par la banque (assurance variable, arrondis) : ses lignes remplacent le calcul.
+    if (Array.isArray(pret.echeancier) && pret.echeancier.length) {
+      const banque = new Map(pret.echeancier.map((e) => [e.date, e]));
+      let reste = capital;
+      for (const l of lignes) {
+        const e = banque.get(l.date);
+        if (e) {
+          if (Number(e.crdAvant)) reste = Number(e.crdAvant);
+          l.capital = round2(Number(e.capital) || 0);
+          l.interets = round2(Number(e.interets) || 0);
+          l.assurance = round2(Number(e.assurance) || 0);
+          l.echeance = round2(l.capital + l.interets);
+          l.total = round2(l.echeance + l.assurance);
+          l.banque = true;
+        }
+        reste = round2(reste - l.capital);
+        l.crd = Math.max(reste, 0);
+      }
+    }
     return lignes;
+  }
+
+  /** Lignes d'échéancier bancaire lues dans un texte : « date  capital dû  capital  intérêts  assurance  échéance ». */
+  function lireEcheancier(texte) {
+    const out = [];
+    for (const l of String(texte || '').split(/\r?\n/)) {
+      const m = l.match(/^\s*(\d{2})\/(\d{2})\/(\d{4})\s+([\d\s.]+,\d{2})\s+([\d\s.]+,\d{2})\s+([\d\s.]+,\d{2})\s+([\d\s.]+,\d{2})\s+([\d\s.]+,\d{2})\s*$/);
+      if (!m) continue;
+      const n = (x) => Number(x.replace(/[\s.]/g, '').replace(',', '.'));
+      out.push({ date: `${m[3]}-${m[2]}-${m[1]}`, crdAvant: n(m[4]), capital: n(m[5]), interets: n(m[6]), assurance: n(m[7]) });
+    }
+    return out;
   }
 
   /** Totaux d'un prêt sur une année civile + CRD au 31/12. */
@@ -602,6 +633,7 @@
   }
 
   const api = {
+    lireEcheancier,
     chargeExistante,
     paiementExistant,
     bailActif,

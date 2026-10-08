@@ -1516,7 +1516,7 @@
       const a = C.pretAnnee(p, annee);
       const coutTotal = tab.reduce((s, l) => s + l.interets + l.assurance, 0) + (Number(p.fraisDossier) || 0);
       return `<tr><td><b>${h(p.libelle || 'Prêt')}</b><div class="small muted">${h(p.banque || '')} — ${h(bienNom(p.bienId))}</div></td>
-        <td class="num">${eur(p.capital)}<div class="small muted">${pct(p.tauxAnnuel)} · ${Math.round(p.dureeMois / 12 * 10) / 10} ans</div></td>
+        <td class="num">${eur(p.capital)}<div class="small muted">${pct(p.tauxAnnuel)} · ${Math.round(p.dureeMois / 12 * 10) / 10} ans</div>${(p.echeancier || []).length ? `<div class="small muted">échéancier de la banque (${p.echeancier.length} échéances)</div>` : ''}</td>
         <td class="num">${eur(m.total)}</td><td class="num">${eur(C.crdAu(p, t))}</td>
         <td class="num">${eur(a.interets)}<div class="small muted">+ ${eur(a.assurance)} ass.</div></td>
         <td class="num">${eur(coutTotal)}</td><td>${dateFr(fin)}</td>
