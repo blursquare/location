@@ -36,8 +36,9 @@
   let cle = null;
   let enregistrements = Promise.resolve();
   let enCours = 0;
-  function save() {
+  function save(options) {
     if (!cle) return;
+    if (!(options && options.local)) planifierEnvoi();
     const instantane = JSON.parse(JSON.stringify(db));
     const c = cle;
     enCours++;
@@ -386,7 +387,7 @@
     const avert = dialoguesBloques
       ? '<div class="card bandeau st-due" style="margin-bottom:12px">Ce navigateur bloque les fenêtres de confirmation : certaines actions (suppressions, imports de fichiers) ne peuvent pas aboutir. Ouvrez l\'outil dans Safari ou Chrome (menu « Ouvrir dans le navigateur »).</div>'
       : '';
-    el.innerHTML = avert + htmlBandeau() + fn();
+    el.innerHTML = avert + htmlChoixCloud() + htmlBandeau() + fn();
   }
 
   // Filtre global : un bien, tous les biens d'un propriétaire (p:id) ou d'un mode de gestion (g:agence / g:direct)
@@ -1640,12 +1641,13 @@
         <p class="small muted">Les SCI (ou le propriétaire en nom propre) apparaissent comme bailleur sur les quittances, avis d'échéance et décomptes. Ils se gèrent dans l'onglet <a href="#biens">Biens</a>,
         avec les gestionnaires : ${db.proprietaires.length} propriétaire(s), ${db.gestionnaires.length} gestionnaire(s).</p></div>
       <div class="card" style="margin-top:12px"><h2 style="margin-top:0">Sauvegarde</h2>
-        <p class="small muted">Les données sont stockées dans ce navigateur uniquement (${n('biens')} biens, ${n('baux')} baux, ${n('paiements')} paiements, ${n('charges')} charges, ${n('prets')} prêts).
+        <p class="small muted">Les données sont stockées dans ce navigateur${cloud.cfg ? ', et synchronisées avec Firebase quand vous êtes connecté' : ' uniquement'} (${n('biens')} biens, ${n('baux')} baux, ${n('paiements')} paiements, ${n('charges')} charges, ${n('prets')} prêts).
         Exportez régulièrement un fichier de sauvegarde ; il permet aussi de transférer les données sur un autre appareil.
         La sauvegarde est chiffrée : il faudra le mot de passe actuel pour la réimporter.</p>
         <div class="toolbar"><button data-act="export">⬇ Exporter (JSON)</button>
         <label class="btn secondary" style="border:1px solid var(--border);background:var(--surface);color:var(--text)">⬆ Importer<input type="file" accept=".json,application/json" data-change="import" hidden></label>
         <button class="secondary" data-act="exportCSV">Exporter paiements & charges (CSV)</button></div></div>
+      ${htmlCarteCloud()}
       <div class="card" style="margin-top:12px"><h2 style="margin-top:0">Mot de passe</h2>
         <p class="small muted">Vos données sont chiffrées avec ce mot de passe (AES-256). L'outil se verrouille après ${VERROU_MINUTES} minutes d'inactivité.
         <b>Un mot de passe oublié ne peut pas être récupéré</b> : conservez-le précieusement.</p>
@@ -1851,6 +1853,196 @@
   }
 
 
+  // ---------- Synchronisation Firebase (facultative) ----------
+  // La configuration (publique par nature) est gardée à part, en clair, pour être retrouvée
+  // même après une réinitialisation des données locales.
+  const CLOUD_KEY = 'gestion-location-cloud';
+  const lireCloudCfg = () => {
+    try {
+      return JSON.parse(lireLocal(CLOUD_KEY) || 'null');
+    } catch (e) {
+      return null;
+    }
+  };
+  const cloud = { cfg: lireCloudCfg(), pret: false, utilisateur: null, version: null, arret: null, statut: '', erreur: '', minuteur: null, choix: null };
+  const cloudBase = () => (cloud.cfg && cloud.cfg.base) || 'principal';
+
+  function etatCloud() {
+    const e = document.getElementById('cloud-etat');
+    if (!e) return;
+    if (!cloud.cfg) return (e.hidden = true);
+    e.hidden = false;
+    const s = !cloud.utilisateur ? ['☁️ hors ligne', 'Non connecté à Firebase (Paramètres)'] : cloud.erreur ? ['☁️ ⚠', cloud.erreur] : cloud.statut === 'envoi' ? ['☁️ …', 'Enregistrement en cours'] : cloud.version === null ? ['☁️ …', 'Synchronisation'] : ['☁️ ✓', `Synchronisé (version ${cloud.version})`];
+    e.textContent = s[0];
+    e.title = s[1];
+  }
+
+  async function demarrerCloud() {
+    if (!cloud.cfg || !window.Cloud) return;
+    try {
+      await Cloud.init(cloud.cfg.config);
+      cloud.pret = true;
+      Cloud.surUtilisateur((u) => {
+        cloud.utilisateur = u;
+        cloud.version = null;
+        if (cloud.arret) cloud.arret();
+        cloud.arret = u ? Cloud.ecouter(cloudBase(), recevoirDistant, (err) => ((cloud.erreur = err.message), etatCloud(), render())) : null;
+        etatCloud();
+        render();
+      });
+    } catch (e) {
+      cloud.erreur = e.message;
+    }
+    etatCloud();
+  }
+
+  function adopterDistant(distant, notifier) {
+    db = C.migrer({ ...empty(), ...JSON.parse(distant.json) });
+    cloud.version = distant.version;
+    save({ local: true });
+    if (notifier) {
+      const quand = distant.majLe ? distant.majLe.toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '';
+      bandeauImport = { type: 'ok', texte: `Données mises à jour depuis Firebase${distant.majPar ? ` par ${distant.majPar}` : ''}${quand ? ` le ${quand}` : ''}.` };
+    }
+  }
+
+  function recevoirDistant(distant) {
+    cloud.erreur = '';
+    if (!distant) {
+      // Base encore vide : on l'initialise avec les données de ce navigateur.
+      cloud.version = 0;
+      if (db.biens.length) envoyerCloud();
+    } else if (distant.json === JSON.stringify(db)) {
+      cloud.version = distant.version;
+    } else if (cloud.version === null) {
+      if (!db.biens.length) adopterDistant(distant, true);
+      else cloud.choix = distant; // les deux contiennent des données différentes : l'utilisateur choisit
+    } else if (distant.version > cloud.version) {
+      adopterDistant(distant, true);
+    }
+    etatCloud();
+    if (cle) render();
+  }
+
+  function planifierEnvoi() {
+    if (!cloud.utilisateur || cloud.version === null) return;
+    clearTimeout(cloud.minuteur);
+    cloud.minuteur = setTimeout(() => envoyerCloud(), 700);
+  }
+
+  async function envoyerCloud(forcer) {
+    if (!cloud.utilisateur) return;
+    cloud.statut = 'envoi';
+    etatCloud();
+    try {
+      cloud.version = await Cloud.ecrire(cloudBase(), db, forcer ? null : cloud.version);
+      cloud.erreur = '';
+    } catch (e) {
+      if (e.conflit) {
+        adopterDistant(e.conflit, false);
+        bandeauImport = { type: 'erreur', texte: `La base a été modifiée ailleurs${e.conflit.majPar ? ` (par ${e.conflit.majPar})` : ''} pendant votre saisie : elle a été rechargée. Refaites votre dernière modification si elle n'apparaît pas.` };
+        render();
+      } else {
+        cloud.erreur = `Enregistrement Firebase impossible : ${e.message}. Nouvel essai à la prochaine modification.`;
+      }
+    }
+    cloud.statut = '';
+    etatCloud();
+  }
+  window.addEventListener('online', () => planifierEnvoi());
+
+  function htmlChoixCloud() {
+    if (!cloud.choix) return '';
+    let d = null;
+    try {
+      d = JSON.parse(cloud.choix.json);
+    } catch (e) {
+      /* contenu illisible */
+    }
+    return `<div class="card bandeau st-part" style="margin-bottom:12px"><p style="margin:0 0 8px"><b>La base Firebase et ce navigateur contiennent des données différentes.</b><br>
+      Firebase : ${d ? h(resumeDonnees(d)) : '?'}${cloud.choix.majPar ? ` — modifiée par ${h(cloud.choix.majPar)}` : ''}${cloud.choix.majLe ? ` le ${cloud.choix.majLe.toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}` : ''}.<br>
+      Ce navigateur : ${h(resumeDonnees(db))}.</p>
+      <div class="toolbar" style="margin:0"><button data-act="cloudGarderDistant">Utiliser la base Firebase</button>
+      <button class="secondary" data-act="cloudGarderLocal">Envoyer les données de ce navigateur vers Firebase</button></div></div>`;
+  }
+  actions.cloudGarderDistant = () => {
+    const d = cloud.choix;
+    cloud.choix = null;
+    adopterDistant(d, false);
+    render();
+  };
+  actions.cloudGarderLocal = async () => {
+    cloud.choix = null;
+    await envoyerCloud(true);
+    render();
+  };
+
+  function htmlCarteCloud() {
+    const c = cloud.cfg;
+    const u = cloud.utilisateur;
+    const etat = !c
+      ? '<p class="small muted">Non configurée : les données restent uniquement dans ce navigateur.</p>'
+      : `<p class="small">Projet <b>${h(c.config.projectId)}</b>, base « ${h(cloudBase())} » — ${u ? `connecté en tant que <b>${h(u.email)}</b>${cloud.version !== null ? `, version ${cloud.version}` : ''}` : 'non connecté'}.</p>${cloud.erreur ? `<p class="small neg">${h(cloud.erreur)}</p>` : ''}`;
+    const connexion = c && !u
+      ? `<div class="form-grid" style="margin-top:8px"><label>E-mail Firebase<input id="fb-email" type="email" autocomplete="username"></label>
+         <label>Mot de passe Firebase<input id="fb-mdp" type="password" autocomplete="current-password"></label></div>
+         <p class="small neg" id="fb-msg"></p><div class="toolbar"><button data-act="cloudConnexion">Se connecter</button></div>`
+      : '';
+    const actionsU = u
+      ? `<div class="toolbar"><button class="secondary" data-act="cloudEnvoyer">Enregistrer maintenant</button><button class="secondary" data-act="cloudDeconnexion">Se déconnecter</button></div>`
+      : '';
+    return `<div class="card" style="margin-top:12px"><h2 style="margin-top:0">Synchronisation Firebase</h2>
+      <p class="small muted">Retrouvez les mêmes données sur tous vos appareils, et laissez Claude les mettre à jour à partir de vos documents.
+      Les données sont stockées dans votre base Firestore, accessibles uniquement aux comptes autorisés par vos règles de sécurité.</p>
+      ${etat}${connexion}${actionsU}
+      <details ${c ? '' : 'open'}><summary>${c ? 'Modifier la configuration' : 'Configurer'}</summary>
+        <p class="small">Collez le bloc <code>firebaseConfig</code> de votre application Web (console Firebase → Paramètres du projet → Vos applications).</p>
+        <textarea id="fb-config" rows="6" placeholder="const firebaseConfig = { apiKey: &quot;…&quot;, authDomain: &quot;…&quot;, projectId: &quot;…&quot;, … };">${c ? h(JSON.stringify(c.config, null, 2)) : ''}</textarea>
+        <label class="small muted" style="display:block;margin-top:6px">Nom de la base<input id="fb-base" value="${h(cloudBase())}" style="max-width:220px"></label>
+        <p class="small neg" id="fb-cfg-msg"></p>
+        <div class="toolbar"><button data-act="cloudConfigurer">Enregistrer la configuration</button>${c ? '<button class="danger" data-act="cloudOublier">Désactiver</button>' : ''}</div>
+      </details></div>`;
+  }
+  actions.cloudConfigurer = async () => {
+    const msg = document.getElementById('fb-cfg-msg');
+    try {
+      const config = Cloud.lireConfig(document.getElementById('fb-config').value);
+      const base = (document.getElementById('fb-base').value || 'principal').trim().replace(/[^\w-]/g, '-');
+      cloud.cfg = { config, base };
+      localStorage.setItem(CLOUD_KEY, JSON.stringify(cloud.cfg));
+      if (cloud.arret) cloud.arret();
+      cloud.utilisateur = null;
+      cloud.version = null;
+      await demarrerCloud();
+      render();
+    } catch (e) {
+      msg.textContent = e.message;
+    }
+  };
+  actions.cloudOublier = async () => {
+    if (cloud.arret) cloud.arret();
+    if (cloud.pret && Cloud.utilisateur()) await Cloud.deconnexion();
+    localStorage.removeItem(CLOUD_KEY);
+    Object.assign(cloud, { cfg: null, utilisateur: null, version: null, arret: null, erreur: '', choix: null });
+    etatCloud();
+    render();
+  };
+  actions.cloudConnexion = async () => {
+    const msg = document.getElementById('fb-msg');
+    msg.textContent = 'Connexion…';
+    try {
+      if (!cloud.pret) await demarrerCloud();
+      await Cloud.connexion(document.getElementById('fb-email').value.trim(), document.getElementById('fb-mdp').value);
+    } catch (e) {
+      msg.textContent = e.message;
+    }
+  };
+  actions.cloudDeconnexion = async () => {
+    await Cloud.deconnexion();
+    render();
+  };
+  actions.cloudEnvoyer = () => envoyerCloud();
+
   // ---------- Verrouillage ----------
   function verrouiller() {
     enregistrements.then(() => location.reload());
@@ -1981,6 +2173,7 @@
         activite();
         await traiterImportLien();
         render();
+        demarrerCloud();
       } catch (err) {
         msg.textContent = err.message;
         bouton.disabled = false;

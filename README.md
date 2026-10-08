@@ -29,6 +29,38 @@ Aucune installation ni serveur : ouvrez `index.html` dans un navigateur, ou la v
 | **Prêts** | Mensualité, assurance, différé, **tableau d'amortissement** annuel et mensuel, CRD, coût total, export CSV. |
 | **Fiscalité** | Estimation du résultat foncier par propriétaire : 2044 en nom propre, 2072 pour une SCI à l'IR avec la quote-part de chaque associé, base de travail pour une SCI à l'IS. |
 
+## Base partagée Firebase (facultatif)
+
+Sans configuration, les données restent dans le navigateur. Avec Firebase, elles sont stockées dans **votre** base Firestore : mêmes données sur tous les appareils, mises à jour **en direct**, historique de chaque version, et possibilité pour Claude de les mettre à jour à partir de vos documents.
+
+### Mise en place (une fois, ~10 minutes)
+
+1. **Projet** : [console.firebase.google.com](https://console.firebase.google.com) → *Ajouter un projet* (Google Analytics inutile).
+2. **Application Web** : *Paramètres du projet → Vos applications → </>* ; copiez le bloc `firebaseConfig`.
+3. **Firestore** : *Firestore Database → Créer une base de données*, en mode production, région `eur3` (Europe).
+4. **Comptes** : *Authentication → Méthode de connexion → Adresse e-mail/Mot de passe → Activer*. Puis *Users → Ajouter un utilisateur* : un compte par personne (vous, votre conjoint) **et un compte dédié à Claude** (e-mail et mot de passe de votre choix).
+5. **Règles** : *Firestore Database → Règles* : collez le contenu de [`firestore.rules`](firestore.rules) en remplaçant `UID_BASTIEN`, `UID_SOPHIE`, `UID_CLAUDE` par les UID des comptes (colonne *UID utilisateur* de la liste des utilisateurs), puis *Publier*. Seuls ces comptes peuvent lire ou écrire.
+6. **Dans l'outil** : *Paramètres → Synchronisation Firebase* : collez le bloc `firebaseConfig`, puis connectez-vous. Si la base est vide, vos données y sont envoyées ; si elle existe déjà, l'outil la récupère (ou vous demande laquelle garder si les deux diffèrent).
+
+### Sécurité
+
+- L'accès est réservé aux comptes listés dans les règles ; la configuration `firebaseConfig` n'est pas secrète.
+- Chaque écriture incrémente une version : deux appareils ne peuvent pas s'écraser sans que l'un soit prévenu. Chaque version est conservée dans `gestion/principal/historique`.
+- Dans le navigateur, les données restent chiffrées par votre mot de passe local. Dans Firestore, elles sont protégées par l'authentification et les règles (et chiffrées au repos par Google), mais **pas chiffrées de bout en bout** : c'est ce qui permet à Claude de les mettre à jour. Pour retirer cet accès, supprimez le compte de Claude dans *Authentication*.
+
+### Mise à jour par Claude (ligne de commande)
+
+```bash
+export FIREBASE_CONFIG=config.json FIREBASE_EMAIL=… FIREBASE_MDP=…
+node outils/firebase-maj.js lire                 # résumé de la base
+node outils/firebase-maj.js fusionner ops.json   # ajoute charges / encaissements, sans doublon
+node outils/firebase-maj.js modifier script.js   # modification ciblée (script(donnees) → donnees)
+node outils/firebase-maj.js remplacer d.json --oui
+node outils/firebase-maj.js historique
+```
+
+Les appareils connectés reçoivent la mise à jour immédiatement, avec un bandeau « mis à jour par … ».
+
 ## Import automatique depuis Gmail
 
 L'onglet **Import Gmail** récupère lui-même les PDF joints à vos e-mails : appels de fonds du syndic et relevés (comptes rendus) de gérance de l'agence.
@@ -71,6 +103,7 @@ Le workflow `.github/workflows/pages.yml` teste puis publie le site à chaque pu
 
 - `assets/calc.js` : calculs purs (prêts, échéances, régularisation, synthèses), testés.
 - `assets/annuaire.js` : recherche d'adresses et de sociétés (SIREN) dans les référentiels publics, testée.
+- `assets/cloud.js` : synchronisation Firebase (Firestore) facultative ; `outils/firebase-maj.js` : mise à jour de la base en ligne de commande ; `firestore.rules` : règles de sécurité.
 - `assets/coffre.js` : chiffrement des données par mot de passe (Web Crypto), testé.
 - `assets/extract.js` : lecture des montants dans le texte des appels de fonds et relevés de gérance, testée.
 - `assets/gmail.js` : connexion Gmail (Google Identity Services) et lecture des PDF (pdf.js, chargé à la demande).
